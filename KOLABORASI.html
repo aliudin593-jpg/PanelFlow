@@ -1,0 +1,1809 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Panduan Kolaborasi Tim — PanelFlow AI</title>
+  <style>
+    :root {
+      --bg: #080d1a;
+      --bg2: #0f1628;
+      --bg3: #161e35;
+      --border: rgba(255,255,255,0.06);
+      --border-hover: rgba(255,255,255,0.12);
+      --blue: #3b82f6;
+      --blue-dim: rgba(59,130,246,0.12);
+      --blue-border: rgba(59,130,246,0.3);
+      --green: #22c55e;
+      --green-dim: rgba(34,197,94,0.1);
+      --green-border: rgba(34,197,94,0.3);
+      --purple: #a855f7;
+      --purple-dim: rgba(168,85,247,0.1);
+      --purple-border: rgba(168,85,247,0.3);
+      --orange: #f97316;
+      --orange-dim: rgba(249,115,22,0.1);
+      --orange-border: rgba(249,115,22,0.3);
+      --red: #ef4444;
+      --red-dim: rgba(239,68,68,0.1);
+      --text: rgba(255,255,255,0.85);
+      --text-dim: rgba(255,255,255,0.4);
+      --text-faint: rgba(255,255,255,0.15);
+      --radius: 14px;
+      --font: 'Segoe UI', system-ui, -apple-system, sans-serif;
+      --mono: 'Cascadia Code', 'Fira Code', 'Courier New', monospace;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--font);
+      min-height: 100vh;
+      line-height: 1.65;
+      font-size: 15px;
+    }
+
+    /* ── LAYOUT ── */
+    .layout { display: flex; min-height: 100vh; }
+
+    /* ── SIDEBAR ── */
+    .sidebar {
+      width: 260px;
+      flex-shrink: 0;
+      background: var(--bg2);
+      border-right: 1px solid var(--border);
+      position: sticky;
+      top: 0;
+      height: 100vh;
+      overflow-y: auto;
+      padding: 0 0 32px;
+    }
+
+    .sidebar-logo {
+      padding: 24px 20px 20px;
+      border-bottom: 1px solid var(--border);
+      margin-bottom: 12px;
+    }
+    .sidebar-logo .brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .brand-icon {
+      width: 36px; height: 36px;
+      background: var(--blue);
+      border-radius: 10px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 18px;
+      flex-shrink: 0;
+    }
+    .brand-name { font-size: 15px; font-weight: 800; letter-spacing: -0.3px; }
+    .brand-sub { font-size: 10px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.1em; margin-top: 1px; }
+
+    .sidebar-section-title {
+      font-size: 9px;
+      font-weight: 800;
+      text-transform: uppercase;
+      letter-spacing: 0.15em;
+      color: var(--text-faint);
+      padding: 16px 20px 6px;
+    }
+
+    .sidebar-link {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 9px 20px;
+      color: var(--text-dim);
+      text-decoration: none;
+      font-size: 13.5px;
+      font-weight: 500;
+      border-radius: 0;
+      transition: all 0.15s;
+      cursor: pointer;
+      border: none;
+      background: none;
+      width: 100%;
+      text-align: left;
+    }
+    .sidebar-link:hover { color: var(--text); background: var(--blue-dim); }
+    .sidebar-link.active { color: var(--blue); background: var(--blue-dim); font-weight: 700; }
+    .sidebar-link .icon { font-size: 15px; width: 18px; text-align: center; }
+    .badge {
+      margin-left: auto;
+      font-size: 9px;
+      font-weight: 800;
+      padding: 2px 7px;
+      border-radius: 99px;
+      background: var(--blue-dim);
+      color: var(--blue);
+      border: 1px solid var(--blue-border);
+    }
+
+    /* ── MAIN CONTENT ── */
+    .main {
+      flex: 1;
+      min-width: 0;
+      padding: 48px 56px 80px;
+      max-width: 900px;
+    }
+
+    /* ── SECTIONS ── */
+    .section { display: none; }
+    .section.active { display: block; }
+
+    /* ── HERO ── */
+    .hero {
+      background: linear-gradient(135deg, var(--bg3) 0%, rgba(59,130,246,0.06) 100%);
+      border: 1px solid var(--border);
+      border-radius: 24px;
+      padding: 48px;
+      margin-bottom: 40px;
+      position: relative;
+      overflow: hidden;
+    }
+    .hero::before {
+      content: '';
+      position: absolute;
+      top: -60px; right: -60px;
+      width: 300px; height: 300px;
+      background: radial-gradient(circle, rgba(59,130,246,0.08) 0%, transparent 70%);
+      pointer-events: none;
+    }
+    .hero-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 12px;
+      background: var(--blue-dim);
+      border: 1px solid var(--blue-border);
+      border-radius: 99px;
+      font-size: 11px;
+      font-weight: 700;
+      color: var(--blue);
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      margin-bottom: 16px;
+    }
+    .hero h1 { font-size: 36px; font-weight: 900; letter-spacing: -1px; line-height: 1.1; margin-bottom: 12px; }
+    .hero h1 span { color: var(--blue); }
+    .hero p { color: var(--text-dim); font-size: 16px; max-width: 520px; line-height: 1.7; }
+
+    /* ── SECTION HEADING ── */
+    .section-heading {
+      display: flex;
+      align-items: flex-start;
+      gap: 16px;
+      margin-bottom: 32px;
+    }
+    .section-number {
+      width: 44px; height: 44px;
+      background: var(--blue);
+      border-radius: 12px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 16px; font-weight: 900;
+      flex-shrink: 0;
+      box-shadow: 0 0 20px rgba(59,130,246,0.3);
+    }
+    .section-heading-text h2 { font-size: 26px; font-weight: 900; letter-spacing: -0.5px; margin-bottom: 4px; }
+    .section-heading-text p { color: var(--text-dim); font-size: 14px; }
+
+    /* ── CARDS ── */
+    .card {
+      background: var(--bg2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 24px;
+      margin-bottom: 20px;
+      transition: border-color 0.2s;
+    }
+    .card:hover { border-color: var(--border-hover); }
+    .card-title {
+      font-size: 13px;
+      font-weight: 800;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      color: var(--text-dim);
+      margin-bottom: 10px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .card-title .dot {
+      width: 6px; height: 6px;
+      border-radius: 50%;
+      background: var(--blue);
+      box-shadow: 0 0 8px var(--blue);
+    }
+
+    /* ── CODE BLOCK ── */
+    .code-block {
+      background: #0a0f1e;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      margin: 16px 0;
+      overflow: hidden;
+    }
+    .code-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 10px 16px;
+      background: rgba(255,255,255,0.02);
+      border-bottom: 1px solid var(--border);
+    }
+    .code-lang {
+      font-size: 10px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      color: var(--text-faint);
+    }
+    .code-dots { display: flex; gap: 6px; }
+    .code-dot { width: 10px; height: 10px; border-radius: 50%; }
+    .copy-btn {
+      font-size: 11px;
+      font-weight: 700;
+      color: var(--text-dim);
+      background: none;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 3px 10px;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+    .copy-btn:hover { color: var(--text); border-color: var(--border-hover); }
+    .copy-btn.copied { color: var(--green); border-color: var(--green-border); }
+    .code-body { padding: 18px 20px; overflow-x: auto; }
+    .code-body pre {
+      font-family: var(--mono);
+      font-size: 13.5px;
+      line-height: 1.8;
+      color: #e2e8f0;
+      white-space: pre;
+    }
+    .cmd { color: #7dd3fc; }
+    .flag { color: #a78bfa; }
+    .str { color: #86efac; }
+    .comment { color: rgba(255,255,255,0.25); font-style: italic; }
+    .prompt { color: rgba(255,255,255,0.2); user-select: none; }
+
+    /* ── STEP LIST ── */
+    .steps { counter-reset: step; }
+    .step {
+      display: flex;
+      gap: 20px;
+      margin-bottom: 32px;
+      position: relative;
+    }
+    .step:not(:last-child)::before {
+      content: '';
+      position: absolute;
+      left: 19px;
+      top: 44px;
+      bottom: -12px;
+      width: 2px;
+      background: linear-gradient(to bottom, var(--blue-border), transparent);
+    }
+    .step-num {
+      width: 40px; height: 40px;
+      border-radius: 50%;
+      background: var(--bg3);
+      border: 2px solid var(--blue-border);
+      display: flex; align-items: center; justify-content: center;
+      font-size: 14px; font-weight: 900;
+      color: var(--blue);
+      flex-shrink: 0;
+    }
+    .step-body { flex: 1; padding-top: 8px; }
+    .step-title { font-size: 16px; font-weight: 700; margin-bottom: 6px; }
+    .step-desc { color: var(--text-dim); font-size: 14px; margin-bottom: 12px; }
+
+    /* ── CALLOUT ── */
+    .callout {
+      display: flex;
+      gap: 14px;
+      padding: 16px 18px;
+      border-radius: 12px;
+      margin: 20px 0;
+      font-size: 14px;
+      line-height: 1.6;
+    }
+    .callout-icon { font-size: 18px; flex-shrink: 0; margin-top: 1px; }
+    .callout.tip { background: var(--green-dim); border: 1px solid var(--green-border); color: #bbf7d0; }
+    .callout.warn { background: var(--orange-dim); border: 1px solid var(--orange-border); color: #fed7aa; }
+    .callout.info { background: var(--blue-dim); border: 1px solid var(--blue-border); color: #bfdbfe; }
+    .callout.danger { background: var(--red-dim); border: 1px solid rgba(239,68,68,0.3); color: #fecaca; }
+
+    /* ── FLOW DIAGRAM ── */
+    .flow {
+      display: flex;
+      align-items: center;
+      gap: 0;
+      margin: 24px 0;
+      flex-wrap: wrap;
+      gap: 0;
+    }
+    .flow-node {
+      background: var(--bg3);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 12px 18px;
+      font-size: 13px;
+      font-weight: 700;
+      text-align: center;
+      min-width: 110px;
+    }
+    .flow-node.blue { border-color: var(--blue-border); color: var(--blue); background: var(--blue-dim); }
+    .flow-node.green { border-color: var(--green-border); color: var(--green); background: var(--green-dim); }
+    .flow-node.purple { border-color: var(--purple-border); color: var(--purple); background: var(--purple-dim); }
+    .flow-node.orange { border-color: var(--orange-border); color: var(--orange); background: var(--orange-dim); }
+    .flow-arrow {
+      color: var(--text-faint);
+      font-size: 20px;
+      padding: 0 8px;
+      flex-shrink: 0;
+    }
+    .flow-sub { font-size: 10px; font-weight: 500; opacity: 0.7; margin-top: 3px; }
+
+    /* ── GRID 2 COL ── */
+    .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 20px; }
+
+    /* ── TABLE ── */
+    .table-wrap { overflow-x: auto; margin: 16px 0; }
+    table { width: 100%; border-collapse: collapse; font-size: 14px; }
+    th {
+      text-align: left;
+      padding: 10px 14px;
+      background: var(--bg3);
+      color: var(--text-dim);
+      font-size: 11px;
+      font-weight: 800;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      border-bottom: 1px solid var(--border);
+    }
+    td { padding: 12px 14px; border-bottom: 1px solid var(--border); font-size: 13.5px; }
+    tr:last-child td { border-bottom: none; }
+    tr:hover td { background: rgba(255,255,255,0.015); }
+    td code {
+      font-family: var(--mono);
+      font-size: 12px;
+      color: #7dd3fc;
+      background: rgba(125,211,252,0.08);
+      padding: 2px 7px;
+      border-radius: 5px;
+    }
+
+    /* ── INLINE CODE ── */
+    p code, li code {
+      font-family: var(--mono);
+      font-size: 12.5px;
+      color: #7dd3fc;
+      background: rgba(125,211,252,0.08);
+      padding: 2px 7px;
+      border-radius: 5px;
+    }
+
+    /* ── PROGRESS BAR (WORKFLOW) ── */
+    .workflow-bar {
+      display: flex;
+      align-items: stretch;
+      border-radius: 14px;
+      overflow: hidden;
+      border: 1px solid var(--border);
+      margin-bottom: 32px;
+    }
+    .workflow-step {
+      flex: 1;
+      padding: 14px 12px;
+      text-align: center;
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      cursor: pointer;
+      transition: all 0.2s;
+      border-right: 1px solid var(--border);
+      background: var(--bg2);
+      color: var(--text-faint);
+    }
+    .workflow-step:last-child { border-right: none; }
+    .workflow-step:hover { background: var(--bg3); color: var(--text-dim); }
+    .workflow-step.active { background: var(--blue-dim); color: var(--blue); }
+    .workflow-step .wf-icon { font-size: 18px; margin-bottom: 4px; }
+
+    /* ── BRANCH VIS ── */
+    .branch-vis {
+      background: #070c18;
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 28px;
+      margin: 20px 0;
+      font-family: var(--mono);
+      font-size: 13px;
+      overflow-x: auto;
+    }
+    .branch-line { display: flex; align-items: center; gap: 6px; margin: 4px 0; white-space: nowrap; }
+    .commit { width: 14px; height: 14px; border-radius: 50%; flex-shrink: 0; }
+    .commit.main { background: var(--blue); box-shadow: 0 0 8px var(--blue); }
+    .commit.feat { background: var(--green); box-shadow: 0 0 8px var(--green); }
+    .commit.merge { background: var(--purple); box-shadow: 0 0 8px var(--purple); }
+    .commit-line { height: 2px; background: rgba(255,255,255,0.15); flex: 1; max-width: 30px; }
+    .commit-label { font-size: 11px; color: var(--text-dim); margin-left: 4px; }
+    .branch-tag {
+      display: inline-flex;
+      align-items: center;
+      font-size: 10px;
+      font-weight: 700;
+      padding: 2px 8px;
+      border-radius: 4px;
+      margin-right: 6px;
+    }
+    .branch-tag.main { background: var(--blue-dim); color: var(--blue); border: 1px solid var(--blue-border); }
+    .branch-tag.feat { background: var(--green-dim); color: var(--green); border: 1px solid var(--green-border); }
+
+    /* ── ROLE CARDS ── */
+    .role-card {
+      border-radius: 14px;
+      padding: 20px;
+      border: 1px solid var(--border);
+    }
+    .role-card.blue { background: var(--blue-dim); border-color: var(--blue-border); }
+    .role-card.green { background: var(--green-dim); border-color: var(--green-border); }
+    .role-card.purple { background: var(--purple-dim); border-color: var(--purple-border); }
+    .role-title { font-size: 13px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 8px; }
+    .role-card.blue .role-title { color: var(--blue); }
+    .role-card.green .role-title { color: var(--green); }
+    .role-card.purple .role-title { color: var(--purple); }
+    .role-card ul { padding-left: 16px; color: var(--text-dim); font-size: 13px; }
+    .role-card li { margin-bottom: 4px; }
+
+    /* ── PROGRESS TRACKER ── */
+    .progress-tracker {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 28px;
+      flex-wrap: wrap;
+    }
+    .pt-step {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 12px;
+      border-radius: 8px;
+      font-size: 12px;
+      font-weight: 700;
+      border: 1px solid var(--border);
+      color: var(--text-faint);
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .pt-step:hover { color: var(--text-dim); border-color: var(--border-hover); }
+    .pt-step.done { color: var(--green); border-color: var(--green-border); background: var(--green-dim); }
+    .pt-step.active { color: var(--blue); border-color: var(--blue-border); background: var(--blue-dim); }
+    .pt-circle {
+      width: 18px; height: 18px;
+      border-radius: 50%;
+      background: var(--bg3);
+      border: 2px solid currentColor;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 9px; font-weight: 900;
+    }
+
+    /* ── SEARCH ── */
+    .search-bar {
+      width: 100%;
+      background: var(--bg2);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 10px 16px;
+      color: var(--text);
+      font-family: var(--font);
+      font-size: 14px;
+      outline: none;
+      margin-bottom: 20px;
+      transition: border-color 0.2s;
+    }
+    .search-bar:focus { border-color: var(--blue-border); }
+    .search-bar::placeholder { color: var(--text-faint); }
+
+    /* ── HR ── */
+    hr { border: none; border-top: 1px solid var(--border); margin: 32px 0; }
+
+    /* ── MOBILE ── */
+    @media (max-width: 768px) {
+      .sidebar { display: none; }
+      .main { padding: 24px 20px 60px; }
+      .hero { padding: 28px; }
+      .hero h1 { font-size: 26px; }
+      .grid-2 { grid-template-columns: 1fr; }
+      .flow { flex-direction: column; align-items: flex-start; }
+      .flow-arrow { transform: rotate(90deg); padding: 4px 0; }
+    }
+
+    /* ── SCROLLBAR ── */
+    ::-webkit-scrollbar { width: 5px; height: 5px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 99px; }
+
+    /* ── MOBILE NAV ── */
+    .mob-nav {
+      display: none;
+      position: fixed;
+      bottom: 0; left: 0; right: 0;
+      background: var(--bg2);
+      border-top: 1px solid var(--border);
+      padding: 8px 12px 20px;
+      gap: 4px;
+      z-index: 100;
+      overflow-x: auto;
+    }
+    .mob-nav-btn {
+      flex-shrink: 0;
+      padding: 6px 14px;
+      border-radius: 8px;
+      font-size: 11px;
+      font-weight: 700;
+      border: none;
+      background: none;
+      color: var(--text-faint);
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    .mob-nav-btn.active { background: var(--blue-dim); color: var(--blue); }
+    @media (max-width: 768px) { .mob-nav { display: flex; } }
+
+    ul, ol { padding-left: 20px; }
+    li { margin-bottom: 6px; color: var(--text-dim); font-size: 14px; }
+    li strong { color: var(--text); }
+
+    strong { color: var(--text); }
+
+    .tag {
+      display: inline-block;
+      font-size: 10px;
+      font-weight: 800;
+      padding: 2px 8px;
+      border-radius: 5px;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }
+    .tag.blue { background: var(--blue-dim); color: var(--blue); border: 1px solid var(--blue-border); }
+    .tag.green { background: var(--green-dim); color: var(--green); border: 1px solid var(--green-border); }
+    .tag.orange { background: var(--orange-dim); color: var(--orange); border: 1px solid var(--orange-border); }
+  </style>
+</head>
+<body>
+<div class="layout">
+
+  <!-- SIDEBAR -->
+  <aside class="sidebar">
+    <div class="sidebar-logo">
+      <div class="brand">
+        <div class="brand-icon">⚡</div>
+        <div>
+          <div class="brand-name">PanelFlow AI</div>
+          <div class="brand-sub">Panduan Tim</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="sidebar-section-title">Mulai Dari Sini</div>
+    <button class="sidebar-link active" onclick="showSection('intro')">
+      <span class="icon">🏠</span> Pengenalan
+    </button>
+    <button class="sidebar-link" onclick="showSection('setup')">
+      <span class="icon">⚙️</span> Setup Pertama Kali
+    </button>
+
+    <div class="sidebar-section-title">Alur Kerja Harian</div>
+    <button class="sidebar-link" onclick="showSection('branch')">
+      <span class="icon">🌿</span> Membuat Branch
+    </button>
+    <button class="sidebar-link" onclick="showSection('daily')">
+      <span class="icon">📅</span> Rutinitas Harian
+    </button>
+    <button class="sidebar-link" onclick="showSection('push')">
+      <span class="icon">⬆️</span> Push ke GitHub
+    </button>
+
+    <div class="sidebar-section-title">Review & Merge</div>
+    <button class="sidebar-link" onclick="showSection('pr')">
+      <span class="icon">📋</span> Pull Request
+      <span class="badge">Penting</span>
+    </button>
+    <button class="sidebar-link" onclick="showSection('review')">
+      <span class="icon">👀</span> Review Kode
+    </button>
+    <button class="sidebar-link" onclick="showSection('merge')">
+      <span class="icon">✅</span> Merge & Approve
+    </button>
+
+    <div class="sidebar-section-title">Situasi Darurat</div>
+    <button class="sidebar-link" onclick="showSection('conflict')">
+      <span class="icon">⚔️</span> Konflik Kode
+    </button>
+    <button class="sidebar-link" onclick="showSection('undo')">
+      <span class="icon">⏪</span> Batalkan Kesalahan
+    </button>
+
+    <div class="sidebar-section-title">Referensi</div>
+    <button class="sidebar-link" onclick="showSection('cheatsheet')">
+      <span class="icon">📖</span> Cheat Sheet
+    </button>
+  </aside>
+
+  <!-- MAIN -->
+  <main class="main">
+
+    <!-- ═══════════════════════════════════════════ -->
+    <!-- SECTION: INTRO -->
+    <!-- ═══════════════════════════════════════════ -->
+    <section id="section-intro" class="section active">
+      <div class="hero">
+        <div class="hero-badge">📘 Panduan Kolaborasi Tim</div>
+        <h1>GitHub untuk <span>Tim PanelFlow</span></h1>
+        <p>Panduan lengkap cara bekerja bareng menggunakan GitHub — dari awal sampai merge, pakai bahasa yang gampang dimengerti siapapun.</p>
+      </div>
+
+      <div class="section-heading">
+        <div class="section-number">💡</div>
+        <div class="section-heading-text">
+          <h2>Apa itu GitHub & Kenapa Dipakai?</h2>
+          <p>Penjelasan sederhana sebelum mulai</p>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title"><div class="dot"></div> Analogi Sederhana</div>
+        <p style="color:var(--text-dim); font-size:14px; line-height:1.8;">
+          Bayangkan project PanelFlow seperti <strong>dokumen Google Docs yang dikerjakan bareng</strong>. Masalahnya, kode program tidak bisa diedit bareng secara real-time seperti Google Docs — kalau dua orang ubah file yang sama bersamaan, hasilnya akan kacau.
+        </p>
+        <br>
+        <p style="color:var(--text-dim); font-size:14px; line-height:1.8;">
+          <strong>GitHub</strong> adalah solusinya. Cara kerjanya: setiap orang <strong>mengambil salinan</strong> project ke laptop masing-masing, mengerjakan bagian mereka, lalu <strong>mengajukan perubahan</strong> untuk diperiksa sebelum masuk ke project utama.
+        </p>
+      </div>
+
+      <div class="grid-2">
+        <div class="card">
+          <div class="card-title"><div class="dot" style="background:var(--green)"></div> Keuntungan</div>
+          <ul>
+            <li>Tidak ada pekerjaan yang hilang</li>
+            <li>Bisa lihat siapa ubah apa & kapan</li>
+            <li>Bisa kembali ke versi sebelumnya</li>
+            <li>Tim bisa kerja paralel tanpa bentrok</li>
+          </ul>
+        </div>
+        <div class="card">
+          <div class="card-title"><div class="dot" style="background:var(--orange)"></div> Istilah Penting</div>
+          <ul>
+            <li><strong>Repository (Repo)</strong> = Gudang project</li>
+            <li><strong>Branch</strong> = Jalur kerja terpisah</li>
+            <li><strong>Commit</strong> = Simpan perubahan</li>
+            <li><strong>Pull Request</strong> = Ajukan perubahan</li>
+            <li><strong>Merge</strong> = Gabungkan ke utama</li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title"><div class="dot" style="background:var(--purple)"></div> Alur Kerja Tim (Gambaran Besar)</div>
+        <div class="flow">
+          <div class="flow-node blue">📥 Clone / Pull<div class="flow-sub">Ambil kode terbaru</div></div>
+          <div class="flow-arrow">→</div>
+          <div class="flow-node green">🌿 Buat Branch<div class="flow-sub">Jalur kerja sendiri</div></div>
+          <div class="flow-arrow">→</div>
+          <div class="flow-node blue">💻 Koding<div class="flow-sub">Kerjakan tugasmu</div></div>
+          <div class="flow-arrow">→</div>
+          <div class="flow-node green">📤 Push<div class="flow-sub">Upload ke GitHub</div></div>
+          <div class="flow-arrow">→</div>
+          <div class="flow-node" style="border-color:var(--purple-border);color:var(--purple);background:var(--purple-dim);">📋 Pull Request<div class="flow-sub">Ajukan review</div></div>
+          <div class="flow-arrow">→</div>
+          <div class="flow-node" style="border-color:var(--orange-border);color:var(--orange);background:var(--orange-dim);">✅ Merge<div class="flow-sub">Masuk ke main</div></div>
+        </div>
+      </div>
+
+      <div class="grid-2">
+        <div class="role-card blue">
+          <div class="role-title">👑 Peran: Owner / Maintainer</div>
+          <ul>
+            <li>Punya akses penuh ke repo</li>
+            <li>Approve & merge pull request</li>
+            <li>Atur branch protection rules</li>
+            <li>Manage akses anggota tim</li>
+          </ul>
+        </div>
+        <div class="role-card green">
+          <div class="role-title">🧑‍💻 Peran: Developer / Contributor</div>
+          <ul>
+            <li>Clone repo & buat branch sendiri</li>
+            <li>Push kode & buat pull request</li>
+            <li>Review kode orang lain</li>
+            <li>Tidak boleh push langsung ke main</li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="callout info">
+        <div class="callout-icon">💡</div>
+        <div>Panduan ini cocok untuk tim 2–10 orang yang mengerjakan PanelFlow AI bersama. Semua command yang ada di sini sudah siap copy-paste!</div>
+      </div>
+    </section>
+
+    <!-- ═══════════════════════════════════════════ -->
+    <!-- SECTION: SETUP -->
+    <!-- ═══════════════════════════════════════════ -->
+    <section id="section-setup" class="section">
+      <div class="section-heading">
+        <div class="section-number">⚙️</div>
+        <div class="section-heading-text">
+          <h2>Setup Pertama Kali</h2>
+          <p>Lakukan ini sekali saja saat pertama kali bergabung ke tim</p>
+        </div>
+      </div>
+
+      <div class="steps">
+        <div class="step">
+          <div class="step-num">1</div>
+          <div class="step-body">
+            <div class="step-title">Install Git di Laptop</div>
+            <div class="step-desc">Git adalah alat yang dipakai untuk berkomunikasi dengan GitHub dari terminal / command prompt.</div>
+            <div class="card" style="margin:0">
+              <ul style="color:var(--text-dim)">
+                <li><strong>Mac:</strong> Buka Terminal → ketik <code>git --version</code>. Kalau belum ada, ikuti instruksi yang muncul.</li>
+                <li><strong>Windows:</strong> Download dari <strong>git-scm.com</strong> → install dengan klik Next terus.</li>
+                <li><strong>Linux:</strong> Ketik <code>sudo apt install git</code> di terminal.</li>
+              </ul>
+            </div>
+          </div>
+        </div>
+
+        <div class="step">
+          <div class="step-num">2</div>
+          <div class="step-body">
+            <div class="step-title">Perkenalkan Diri ke Git</div>
+            <div class="step-desc">Git perlu tahu namamu dan emailmu untuk mencatat siapa yang mengubah apa.</div>
+            <div class="code-block">
+              <div class="code-header">
+                <div style="display:flex;gap:6px"><div class="code-dot" style="background:#ff5f57"></div><div class="code-dot" style="background:#febc2e"></div><div class="code-dot" style="background:#28c840"></div></div>
+                <span class="code-lang">Terminal</span>
+                <button class="copy-btn" onclick="copyCode(this)">Salin</button>
+              </div>
+              <div class="code-body"><pre><span class="comment"># Ganti dengan nama dan email GitHub kamu</span>
+<span class="prompt">$ </span><span class="cmd">git config</span> <span class="flag">--global</span> user.name <span class="str">"Nama Kamu"</span>
+<span class="prompt">$ </span><span class="cmd">git config</span> <span class="flag">--global</span> user.email <span class="str">"email@kamu.com"</span>
+
+<span class="comment"># Verifikasi sudah benar</span>
+<span class="prompt">$ </span><span class="cmd">git config</span> <span class="flag">--list</span></pre></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="step">
+          <div class="step-num">3</div>
+          <div class="step-body">
+            <div class="step-title">Clone Repository PanelFlow</div>
+            <div class="step-desc">Ini artinya "download salinan project ke laptop kamu". Lakukan di folder yang kamu inginkan.</div>
+            <div class="code-block">
+              <div class="code-header">
+                <div style="display:flex;gap:6px"><div class="code-dot" style="background:#ff5f57"></div><div class="code-dot" style="background:#febc2e"></div><div class="code-dot" style="background:#28c840"></div></div>
+                <span class="code-lang">Terminal</span>
+                <button class="copy-btn" onclick="copyCode(this)">Salin</button>
+              </div>
+              <div class="code-body"><pre><span class="comment"># Masuk ke folder tempat kamu mau taruh project</span>
+<span class="prompt">$ </span><span class="cmd">cd</span> ~/Desktop
+
+<span class="comment"># Clone project (salin URL dari GitHub)</span>
+<span class="prompt">$ </span><span class="cmd">git clone</span> https://github.com/nama-org/PanelFlow.git
+
+<span class="comment"># Masuk ke folder project</span>
+<span class="prompt">$ </span><span class="cmd">cd</span> PanelFlow
+
+<span class="comment"># Install semua dependencies</span>
+<span class="prompt">$ </span><span class="cmd">npm install</span></pre></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="step">
+          <div class="step-num">4</div>
+          <div class="step-body">
+            <div class="step-title">Setup File .env</div>
+            <div class="step-desc">File ini berisi API key rahasia. Tidak pernah di-upload ke GitHub — harus dibuat manual.</div>
+            <div class="code-block">
+              <div class="code-header">
+                <div style="display:flex;gap:6px"><div class="code-dot" style="background:#ff5f57"></div><div class="code-dot" style="background:#febc2e"></div><div class="code-dot" style="background:#28c840"></div></div>
+                <span class="code-lang">Terminal</span>
+                <button class="copy-btn" onclick="copyCode(this)">Salin</button>
+              </div>
+              <div class="code-body"><pre><span class="comment"># Salin template .env yang sudah tersedia</span>
+<span class="prompt">$ </span><span class="cmd">cp</span> .env.example .env
+
+<span class="comment"># Buka file .env dan isi API key kamu</span>
+<span class="comment"># GEMINI_API_KEY=isi_api_key_kamu_di_sini</span></pre></div>
+            </div>
+            <div class="callout warn">
+              <div class="callout-icon">⚠️</div>
+              <div>Jangan pernah share isi file <code>.env</code> ke siapapun atau commit ke GitHub. File ini sudah terlindungi oleh <code>.gitignore</code>.</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="step">
+          <div class="step-num">5</div>
+          <div class="step-body">
+            <div class="step-title">Test Jalankan Project</div>
+            <div class="step-desc">Pastikan semuanya berjalan normal di laptop kamu.</div>
+            <div class="code-block">
+              <div class="code-header">
+                <div style="display:flex;gap:6px"><div class="code-dot" style="background:#ff5f57"></div><div class="code-dot" style="background:#febc2e"></div><div class="code-dot" style="background:#28c840"></div></div>
+                <span class="code-lang">Terminal</span>
+                <button class="copy-btn" onclick="copyCode(this)">Salin</button>
+              </div>
+              <div class="code-body"><pre><span class="prompt">$ </span><span class="cmd">npm run dev</span>
+
+<span class="comment"># Buka browser ke: http://localhost:3000</span>
+<span class="comment"># Kalau muncul tampilan PanelFlow AI, setup sudah berhasil! 🎉</span></pre></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ═══════════════════════════════════════════ -->
+    <!-- SECTION: BRANCH -->
+    <!-- ═══════════════════════════════════════════ -->
+    <section id="section-branch" class="section">
+      <div class="section-heading">
+        <div class="section-number">🌿</div>
+        <div class="section-heading-text">
+          <h2>Membuat Branch Baru</h2>
+          <p>Branch = jalur kerja terpisah agar tidak mengganggu kode utama</p>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title"><div class="dot"></div> Apa itu Branch?</div>
+        <p style="color:var(--text-dim);font-size:14px;line-height:1.8;">
+          Bayangkan project kamu seperti pohon. <strong>Branch main</strong> adalah batang utama — inilah kode yang sudah berjalan stabil dan dipakai semua orang.
+          <br><br>
+          Saat kamu mau tambahkan fitur baru atau perbaiki bug, kamu membuat <strong>cabang baru</strong> dari batang itu. Kamu bebas bekerja di cabang sendiri tanpa merusak batang utama. Kalau sudah selesai dan sudah diperiksa, barulah cabangmu digabungkan ke batang utama.
+        </p>
+      </div>
+
+      <div class="branch-vis">
+        <div class="branch-line">
+          <span class="branch-tag main">main</span>
+          <div class="commit main"></div><div class="commit-line"></div>
+          <div class="commit main"></div><div class="commit-line"></div>
+          <div class="commit main"></div><div class="commit-line"></div>
+          <div class="commit merge"></div><div class="commit-line"></div>
+          <div class="commit main"></div>
+          <span class="commit-label">← kode stabil</span>
+        </div>
+        <div style="margin-left:80px; border-left: 2px dashed rgba(34,197,94,0.3); padding-left:16px; margin-top:4px; margin-bottom:4px;">
+          <div class="branch-line">
+            <span class="branch-tag feat">feat/tambah-fitur-x</span>
+            <div class="commit feat"></div><div class="commit-line"></div>
+            <div class="commit feat"></div><div class="commit-line"></div>
+            <div class="commit feat"></div>
+            <span class="commit-label">← kamu kerja di sini</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title"><div class="dot" style="background:var(--green)"></div> Konvensi Nama Branch</div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Tipe</th><th>Format Nama</th><th>Contoh</th></tr></thead>
+            <tbody>
+              <tr><td><span class="tag blue">Fitur Baru</span></td><td><code>feat/nama-fitur</code></td><td><code>feat/export-mp4</code></td></tr>
+              <tr><td><span class="tag orange">Perbaikan Bug</span></td><td><code>fix/nama-bug</code></td><td><code>fix/panel-detection-crash</code></td></tr>
+              <tr><td><span class="tag" style="background:var(--purple-dim);color:var(--purple);border:1px solid var(--purple-border)">Refactor</span></td><td><code>refactor/nama-bagian</code></td><td><code>refactor/storage-service</code></td></tr>
+              <tr><td><span class="tag" style="background:rgba(255,255,255,0.05);color:var(--text-dim);border:1px solid var(--border)">Docs</span></td><td><code>docs/nama-doc</code></td><td><code>docs/readme-update</code></td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="callout tip">
+          <div class="callout-icon">✅</div>
+          <div>Gunakan <strong>huruf kecil</strong> dan <strong>tanda minus (-)</strong> sebagai pemisah. Hindari spasi dan karakter khusus.</div>
+        </div>
+      </div>
+
+      <div class="steps">
+        <div class="step">
+          <div class="step-num">1</div>
+          <div class="step-body">
+            <div class="step-title">Pastikan kamu di branch main & kode terbaru</div>
+            <div class="step-desc">Sebelum buat branch, selalu ambil kode terbaru dari GitHub terlebih dahulu.</div>
+            <div class="code-block">
+              <div class="code-header">
+                <div style="display:flex;gap:6px"><div class="code-dot" style="background:#ff5f57"></div><div class="code-dot" style="background:#febc2e"></div><div class="code-dot" style="background:#28c840"></div></div>
+                <span class="code-lang">Terminal</span>
+                <button class="copy-btn" onclick="copyCode(this)">Salin</button>
+              </div>
+              <div class="code-body"><pre><span class="comment"># Pindah ke branch main</span>
+<span class="prompt">$ </span><span class="cmd">git checkout</span> main
+
+<span class="comment"># Ambil & gabungkan perubahan terbaru dari GitHub</span>
+<span class="prompt">$ </span><span class="cmd">git pull</span> origin main
+
+<span class="comment"># Hasilnya harus: Already up to date. atau daftar file yang berubah</span></pre></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="step">
+          <div class="step-num">2</div>
+          <div class="step-body">
+            <div class="step-title">Buat branch baru & langsung pindah ke sana</div>
+            <div class="step-desc">Satu command ini langsung membuat branch baru sekaligus pindah ke dalamnya.</div>
+            <div class="code-block">
+              <div class="code-header">
+                <div style="display:flex;gap:6px"><div class="code-dot" style="background:#ff5f57"></div><div class="code-dot" style="background:#febc2e"></div><div class="code-dot" style="background:#28c840"></div></div>
+                <span class="code-lang">Terminal</span>
+                <button class="copy-btn" onclick="copyCode(this)">Salin</button>
+              </div>
+              <div class="code-body"><pre><span class="comment"># Format: git checkout -b nama-branch-kamu</span>
+<span class="prompt">$ </span><span class="cmd">git checkout</span> <span class="flag">-b</span> feat/nama-fitur-kamu
+
+<span class="comment"># Contoh nyata:</span>
+<span class="prompt">$ </span><span class="cmd">git checkout</span> <span class="flag">-b</span> feat/export-mp4
+<span class="comment"># Output: Switched to a new branch 'feat/export-mp4'</span>
+
+<span class="comment"># Verifikasi kamu sudah di branch yang benar</span>
+<span class="prompt">$ </span><span class="cmd">git branch</span>
+<span class="comment"># Output: * feat/export-mp4  ← tanda bintang = branch aktif</span>
+<span class="comment">#           main</span></pre></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="step">
+          <div class="step-num">3</div>
+          <div class="step-body">
+            <div class="step-title">Mulai bekerja!</div>
+            <div class="step-desc">Sekarang kamu bebas mengubah, menambah, atau menghapus file apa saja. Kode di branch main tidak akan terpengaruh sama sekali.</div>
+            <div class="callout info">
+              <div class="callout-icon">💡</div>
+              <div>Jalankan <code>npm run dev</code> untuk mulai coding sambil melihat hasilnya langsung di browser.</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ═══════════════════════════════════════════ -->
+    <!-- SECTION: DAILY -->
+    <!-- ═══════════════════════════════════════════ -->
+    <section id="section-daily" class="section">
+      <div class="section-heading">
+        <div class="section-number">📅</div>
+        <div class="section-heading-text">
+          <h2>Rutinitas Harian</h2>
+          <p>Yang harus dilakukan setiap kali mulai dan selesai kerja</p>
+        </div>
+      </div>
+
+      <div class="callout info">
+        <div class="callout-icon">☀️</div>
+        <div><strong>Setiap pagi sebelum mulai coding:</strong> selalu pull kode terbaru! Ini memastikan kamu tidak ketinggalan perubahan dari teman tim.</div>
+      </div>
+
+      <div class="steps">
+        <div class="step">
+          <div class="step-num">A</div>
+          <div class="step-body">
+            <div class="step-title">Ambil kode terbaru (setiap pagi / sebelum mulai)</div>
+            <div class="code-block">
+              <div class="code-header">
+                <div style="display:flex;gap:6px"><div class="code-dot" style="background:#ff5f57"></div><div class="code-dot" style="background:#febc2e"></div><div class="code-dot" style="background:#28c840"></div></div>
+                <span class="code-lang">Terminal — Rutinitas Pagi</span>
+                <button class="copy-btn" onclick="copyCode(this)">Salin</button>
+              </div>
+              <div class="code-body"><pre><span class="comment"># 1. Pindah ke main dulu</span>
+<span class="prompt">$ </span><span class="cmd">git checkout</span> main
+
+<span class="comment"># 2. Ambil perubahan terbaru dari GitHub</span>
+<span class="prompt">$ </span><span class="cmd">git pull</span> origin main
+
+<span class="comment"># 3. Kembali ke branch kerja kamu</span>
+<span class="prompt">$ </span><span class="cmd">git checkout</span> feat/nama-fitur-kamu
+
+<span class="comment"># 4. Gabungkan update main ke branch kamu (opsional, sangat dianjurkan)</span>
+<span class="prompt">$ </span><span class="cmd">git merge</span> main</pre></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="step">
+          <div class="step-num">B</div>
+          <div class="step-body">
+            <div class="step-title">Simpan perubahan dengan commit (berkala saat coding)</div>
+            <div class="step-desc">Commit = checkpoint. Lakukan setiap kali kamu selesai mengerjakan sesuatu yang berarti. Jangan nunggu sampai semua selesai baru commit!</div>
+            <div class="code-block">
+              <div class="code-header">
+                <div style="display:flex;gap:6px"><div class="code-dot" style="background:#ff5f57"></div><div class="code-dot" style="background:#febc2e"></div><div class="code-dot" style="background:#28c840"></div></div>
+                <span class="code-lang">Terminal — Commit Perubahan</span>
+                <button class="copy-btn" onclick="copyCode(this)">Salin</button>
+              </div>
+              <div class="code-body"><pre><span class="comment"># 1. Lihat file apa saja yang sudah kamu ubah</span>
+<span class="prompt">$ </span><span class="cmd">git status</span>
+
+<span class="comment"># 2a. Tambahkan semua file yang berubah ke "antrian commit"</span>
+<span class="prompt">$ </span><span class="cmd">git add</span> .
+
+<span class="comment"># 2b. ATAU tambahkan file tertentu saja (lebih aman)</span>
+<span class="prompt">$ </span><span class="cmd">git add</span> src/services/storage.ts
+
+<span class="comment"># 3. Simpan dengan pesan yang jelas</span>
+<span class="prompt">$ </span><span class="cmd">git commit</span> <span class="flag">-m</span> <span class="str">"feat: tambahkan export video ke format MP4"</span></pre></div>
+            </div>
+            <div class="card" style="margin-top:16px">
+              <div class="card-title"><div class="dot" style="background:var(--green)"></div> Format Pesan Commit yang Baik</div>
+              <div class="table-wrap">
+                <table>
+                  <thead><tr><th>Awalan</th><th>Dipakai untuk</th><th>Contoh</th></tr></thead>
+                  <tbody>
+                    <tr><td><code>feat:</code></td><td>Fitur baru</td><td><code>feat: tambah tombol import project</code></td></tr>
+                    <tr><td><code>fix:</code></td><td>Perbaikan bug</td><td><code>fix: panel hilang setelah auto-snap</code></td></tr>
+                    <tr><td><code>refactor:</code></td><td>Perbaikan struktur kode</td><td><code>refactor: pisah storage ke service sendiri</code></td></tr>
+                    <tr><td><code>style:</code></td><td>Tampilan / CSS</td><td><code>style: perbaiki warna tombol navbar</code></td></tr>
+                    <tr><td><code>docs:</code></td><td>Dokumentasi</td><td><code>docs: tambah panduan kolaborasi</code></td></tr>
+                    <tr><td><code>chore:</code></td><td>Setup / config</td><td><code>chore: install jszip dan idb</code></td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ═══════════════════════════════════════════ -->
+    <!-- SECTION: PUSH -->
+    <!-- ═══════════════════════════════════════════ -->
+    <section id="section-push" class="section">
+      <div class="section-heading">
+        <div class="section-number">⬆️</div>
+        <div class="section-heading-text">
+          <h2>Push ke GitHub</h2>
+          <p>Upload pekerjaan kamu agar bisa dilihat dan di-review tim</p>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title"><div class="dot"></div> Commit vs Push — Apa Bedanya?</div>
+        <div class="grid-2">
+          <div style="background:var(--blue-dim);border:1px solid var(--blue-border);border-radius:10px;padding:16px;">
+            <div style="font-size:12px;font-weight:800;color:var(--blue);text-transform:uppercase;letter-spacing:0.08em;margin-bottom:8px;">💾 Commit</div>
+            <p style="color:var(--text-dim);font-size:13px;line-height:1.7;">Menyimpan perubahan di laptop kamu. Seperti "Save" di game. Hanya ada di laptop kamu sendiri.</p>
+          </div>
+          <div style="background:var(--green-dim);border:1px solid var(--green-border);border-radius:10px;padding:16px;">
+            <div style="font-size:12px;font-weight:800;color:var(--green);text-transform:uppercase;letter-spacing:0.08em;margin-bottom:8px;">☁️ Push</div>
+            <p style="color:var(--text-dim);font-size:13px;line-height:1.7;">Mengirim commit ke GitHub. Baru setelah push, tim lain bisa melihat pekerjaanmu.</p>
+          </div>
+        </div>
+      </div>
+
+      <div class="steps">
+        <div class="step">
+          <div class="step-num">1</div>
+          <div class="step-body">
+            <div class="step-title">Push branch kamu ke GitHub</div>
+            <div class="code-block">
+              <div class="code-header">
+                <div style="display:flex;gap:6px"><div class="code-dot" style="background:#ff5f57"></div><div class="code-dot" style="background:#febc2e"></div><div class="code-dot" style="background:#28c840"></div></div>
+                <span class="code-lang">Terminal</span>
+                <button class="copy-btn" onclick="copyCode(this)">Salin</button>
+              </div>
+              <div class="code-body"><pre><span class="comment"># Push pertama kali (branch baru)</span>
+<span class="prompt">$ </span><span class="cmd">git push</span> <span class="flag">-u</span> origin feat/nama-fitur-kamu
+
+<span class="comment"># Push selanjutnya (sudah pernah push sebelumnya)</span>
+<span class="prompt">$ </span><span class="cmd">git push</span>
+
+<span class="comment"># Output yang berarti sukses:</span>
+<span class="comment"># Branch 'feat/nama-fitur-kamu' set up to track remote branch</span>
+<span class="comment"># To https://github.com/.../PanelFlow.git</span>
+<span class="comment"># * [new branch] feat/nama-fitur-kamu -> feat/nama-fitur-kamu</span></pre></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="step">
+          <div class="step-num">2</div>
+          <div class="step-body">
+            <div class="step-title">Buka GitHub dan buat Pull Request</div>
+            <div class="step-desc">Setelah push, GitHub biasanya langsung menampilkan tombol hijau <strong>"Compare & pull request"</strong>. Klik tombol itu!</div>
+            <div class="callout tip">
+              <div class="callout-icon">✅</div>
+              <div>Kalau tidak muncul, buka tab <strong>Pull Requests</strong> di halaman repo GitHub dan klik <strong>"New pull request"</strong>.</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ═══════════════════════════════════════════ -->
+    <!-- SECTION: PULL REQUEST -->
+    <!-- ═══════════════════════════════════════════ -->
+    <section id="section-pr" class="section">
+      <div class="section-heading">
+        <div class="section-number">📋</div>
+        <div class="section-heading-text">
+          <h2>Membuat Pull Request</h2>
+          <p>Cara mengajukan perubahan kamu untuk diperiksa tim sebelum masuk ke main</p>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title"><div class="dot"></div> Pull Request itu Apa?</div>
+        <p style="color:var(--text-dim);font-size:14px;line-height:1.8;">
+          Pull Request (PR) adalah cara kamu <strong>"mengajukan lamaran"</strong> agar perubahan di branch-mu diterima dan digabungkan ke branch main. Di sinilah tim bisa melihat apa yang kamu ubah, memberikan komentar, dan menyetujuinya.
+        </p>
+      </div>
+
+      <div class="steps">
+        <div class="step">
+          <div class="step-num">1</div>
+          <div class="step-body">
+            <div class="step-title">Isi judul PR yang jelas</div>
+            <div class="step-desc">Judul yang baik langsung menjelaskan apa yang dilakukan tanpa perlu buka filenya.</div>
+            <div class="card" style="margin:0">
+              <div style="margin-bottom:10px;">
+                <div style="font-size:11px;color:var(--red);font-weight:700;margin-bottom:4px;">❌ Judul yang buruk:</div>
+                <div style="background:rgba(239,68,68,0.05);border:1px solid rgba(239,68,68,0.2);border-radius:8px;padding:10px 14px;font-size:13px;color:var(--text-dim)">Update kode</div>
+              </div>
+              <div>
+                <div style="font-size:11px;color:var(--green);font-weight:700;margin-bottom:4px;">✅ Judul yang baik:</div>
+                <div style="background:var(--green-dim);border:1px solid var(--green-border);border-radius:8px;padding:10px 14px;font-size:13px;color:#bbf7d0">feat: tambahkan IndexedDB untuk storage project + export ZIP .panelflow</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="step">
+          <div class="step-num">2</div>
+          <div class="step-body">
+            <div class="step-title">Isi deskripsi PR</div>
+            <div class="step-desc">Gunakan template berikut agar reviewer mudah memahami apa yang kamu kerjakan.</div>
+            <div class="code-block">
+              <div class="code-header">
+                <div style="display:flex;gap:6px"><div class="code-dot" style="background:#ff5f57"></div><div class="code-dot" style="background:#febc2e"></div><div class="code-dot" style="background:#28c840"></div></div>
+                <span class="code-lang">Markdown — Template Deskripsi PR</span>
+                <button class="copy-btn" onclick="copyCode(this)">Salin</button>
+              </div>
+              <div class="code-body"><pre><span class="comment">## 📝 Ringkasan</span>
+Jelaskan dalam 2-3 kalimat apa yang kamu ubah dan kenapa.
+
+<span class="comment">## 🔧 Perubahan yang Dibuat</span>
+- Tambahkan `src/services/storage.ts` untuk IndexedDB
+- Ganti localStorage dengan IndexedDB di App.tsx
+- Tambahkan tombol Export / Import project di navbar
+
+<span class="comment">## 🧪 Cara Test</span>
+1. Jalankan `npm run dev`
+2. Upload chapter komik
+3. Reload halaman → data masih ada
+4. Klik tombol Export → file .panelflow terdownload
+
+<span class="comment">## ⚠️ Hal yang Perlu Diperhatikan</span>
+- Jika ada data lama di localStorage, akan otomatis migrasi
+- File .panelflow bisa berukuran besar jika chapter banyak</pre></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="step">
+          <div class="step-num">3</div>
+          <div class="step-body">
+            <div class="step-title">Assign reviewer & label</div>
+            <div class="step-desc">Di sidebar kanan GitHub, atur:</div>
+            <div class="card" style="margin:0">
+              <ul>
+                <li><strong>Reviewers:</strong> Tag teman yang harus review kodenya</li>
+                <li><strong>Assignees:</strong> Namamu sendiri (yang mengerjakan)</li>
+                <li><strong>Labels:</strong> Pilih <code>feature</code>, <code>bug</code>, atau <code>enhancement</code></li>
+              </ul>
+            </div>
+          </div>
+        </div>
+
+        <div class="step">
+          <div class="step-num">4</div>
+          <div class="step-body">
+            <div class="step-title">Klik "Create Pull Request"</div>
+            <div class="step-desc">PR kamu sudah aktif! Reviewer akan mendapat notifikasi email dari GitHub.</div>
+            <div class="callout tip">
+              <div class="callout-icon">💡</div>
+              <div>Kalau PR masih dalam progress dan belum siap di-review, tambahkan prefix <strong>[WIP]</strong> di judulnya atau klik <strong>"Convert to Draft"</strong>.</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ═══════════════════════════════════════════ -->
+    <!-- SECTION: REVIEW -->
+    <!-- ═══════════════════════════════════════════ -->
+    <section id="section-review" class="section">
+      <div class="section-heading">
+        <div class="section-number">👀</div>
+        <div class="section-heading-text">
+          <h2>Cara Me-review Kode Orang Lain</h2>
+          <p>Panduan untuk reviewer — cara memberi feedback yang membangun</p>
+        </div>
+      </div>
+
+      <div class="steps">
+        <div class="step">
+          <div class="step-num">1</div>
+          <div class="step-body">
+            <div class="step-title">Buka tab "Files changed" di PR</div>
+            <div class="step-desc">Di sini kamu bisa melihat semua perubahan. Baris merah = dihapus, baris hijau = ditambah.</div>
+          </div>
+        </div>
+
+        <div class="step">
+          <div class="step-num">2</div>
+          <div class="step-body">
+            <div class="step-title">Klik baris kode untuk berkomentar</div>
+            <div class="step-desc">Hover ke nomor baris → muncul ikon + biru → klik untuk tambah komentar spesifik di baris itu.</div>
+            <div class="card" style="margin:0">
+              <div class="card-title"><div class="dot" style="background:var(--green)"></div> Tips Komentar yang Membangun</div>
+              <ul>
+                <li>❌ "Kodenya salah" → ✅ "Bagian ini bisa menyebabkan error jika array kosong, pertimbangkan cek <code>.length</code> dulu"</li>
+                <li>❌ "Jelek" → ✅ "Bisa lebih readable kalau variabelnya diberi nama yang lebih deskriptif, misalnya <code>panelImages</code> bukan <code>data</code>"</li>
+                <li>Awali dengan hal positif sebelum kritik</li>
+                <li>Bedakan antara saran (boleh diabaikan) vs wajib diperbaiki</li>
+              </ul>
+            </div>
+          </div>
+        </div>
+
+        <div class="step">
+          <div class="step-num">3</div>
+          <div class="step-body">
+            <div class="step-title">Submit review dengan status</div>
+            <div class="step-desc">Klik <strong>"Review changes"</strong> di pojok kanan atas, lalu pilih:</div>
+            <div class="grid-2">
+              <div style="background:var(--green-dim);border:1px solid var(--green-border);border-radius:10px;padding:16px;">
+                <div style="font-size:12px;font-weight:800;color:var(--green);margin-bottom:6px;">✅ Approve</div>
+                <p style="color:var(--text-dim);font-size:13px;">Kode sudah baik, setuju untuk di-merge.</p>
+              </div>
+              <div style="background:var(--orange-dim);border:1px solid var(--orange-border);border-radius:10px;padding:16px;">
+                <div style="font-size:12px;font-weight:800;color:var(--orange);margin-bottom:6px;">🔄 Request Changes</div>
+                <p style="color:var(--text-dim);font-size:13px;">Ada yang perlu diperbaiki dulu sebelum bisa di-merge.</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <hr>
+
+      <div class="section-heading">
+        <div class="section-number">🔁</div>
+        <div class="section-heading-text">
+          <h2>Merespons Feedback (untuk Penulis PR)</h2>
+          <p>Setelah reviewer memberi komentar, ini yang harus dilakukan</p>
+        </div>
+      </div>
+
+      <div class="steps">
+        <div class="step">
+          <div class="step-num">1</div>
+          <div class="step-body">
+            <div class="step-title">Perbaiki kode di laptop</div>
+            <div class="step-desc">Buka file yang dikomentari, perbaiki sesuai saran reviewer.</div>
+          </div>
+        </div>
+
+        <div class="step">
+          <div class="step-num">2</div>
+          <div class="step-body">
+            <div class="step-title">Commit dan push lagi</div>
+            <div class="code-block">
+              <div class="code-header">
+                <div style="display:flex;gap:6px"><div class="code-dot" style="background:#ff5f57"></div><div class="code-dot" style="background:#febc2e"></div><div class="code-dot" style="background:#28c840"></div></div>
+                <span class="code-lang">Terminal</span>
+                <button class="copy-btn" onclick="copyCode(this)">Salin</button>
+              </div>
+              <div class="code-body"><pre><span class="prompt">$ </span><span class="cmd">git add</span> .
+<span class="prompt">$ </span><span class="cmd">git commit</span> <span class="flag">-m</span> <span class="str">"fix: perbaiki feedback dari review — cek array kosong"</span>
+<span class="prompt">$ </span><span class="cmd">git push</span>
+
+<span class="comment"># Commit baru ini otomatis masuk ke PR yang sama!</span>
+<span class="comment"># Tidak perlu buat PR baru.</span></pre></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="step">
+          <div class="step-num">3</div>
+          <div class="step-body">
+            <div class="step-title">Resolve komentar di GitHub</div>
+            <div class="step-desc">Buka kembali PR di GitHub, klik <strong>"Resolve conversation"</strong> di setiap komentar yang sudah kamu tangani. Ini membantu reviewer tahu mana yang sudah beres.</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ═══════════════════════════════════════════ -->
+    <!-- SECTION: MERGE -->
+    <!-- ═══════════════════════════════════════════ -->
+    <section id="section-merge" class="section">
+      <div class="section-heading">
+        <div class="section-number">✅</div>
+        <div class="section-heading-text">
+          <h2>Merge & Approve</h2>
+          <p>Tahap terakhir — menggabungkan perubahan ke branch main</p>
+        </div>
+      </div>
+
+      <div class="callout info">
+        <div class="callout-icon">ℹ️</div>
+        <div><strong>Siapa yang bisa merge?</strong> Di project PanelFlow, hanya <strong>Owner / Maintainer</strong> yang boleh merge ke branch main. Developer tidak boleh merge PR sendiri.</div>
+      </div>
+
+      <div class="steps">
+        <div class="step">
+          <div class="step-num">1</div>
+          <div class="step-body">
+            <div class="step-title">Syarat PR bisa di-merge</div>
+            <div class="card" style="margin:0">
+              <ul>
+                <li>✅ Minimal 1 reviewer sudah Approve</li>
+                <li>✅ Semua komentar "Request Changes" sudah di-resolve</li>
+                <li>✅ Tidak ada konflik dengan branch main</li>
+                <li>✅ CI/CD checks passed (kalau ada)</li>
+              </ul>
+            </div>
+          </div>
+        </div>
+
+        <div class="step">
+          <div class="step-num">2</div>
+          <div class="step-body">
+            <div class="step-title">Pilih metode merge yang tepat</div>
+            <div class="card" style="margin:0">
+              <div class="table-wrap">
+                <table>
+                  <thead><tr><th>Metode</th><th>Cocok untuk</th><th>Efek di history</th></tr></thead>
+                  <tbody>
+                    <tr>
+                      <td><strong>Squash and merge</strong> ⭐</td>
+                      <td>Fitur kecil, hotfix</td>
+                      <td>Semua commit jadi 1 commit rapi di main</td>
+                    </tr>
+                    <tr>
+                      <td><strong>Merge commit</strong></td>
+                      <td>Fitur besar, banyak commit penting</td>
+                      <td>Semua commit masuk + 1 commit merge</td>
+                    </tr>
+                    <tr>
+                      <td><strong>Rebase and merge</strong></td>
+                      <td>Advanced users saja</td>
+                      <td>Commit diletakkan ulang tanpa merge commit</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+              <div class="callout tip">
+                <div class="callout-icon">⭐</div>
+                <div>Rekomendasi untuk PanelFlow: pakai <strong>Squash and merge</strong> agar history di main tetap bersih dan mudah dibaca.</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="step">
+          <div class="step-num">3</div>
+          <div class="step-body">
+            <div class="step-title">Klik "Merge pull request" → Confirm</div>
+            <div class="step-desc">Perubahan sekarang sudah masuk ke branch main! Semua anggota tim bisa pull untuk mendapatkan update terbaru.</div>
+          </div>
+        </div>
+
+        <div class="step">
+          <div class="step-num">4</div>
+          <div class="step-body">
+            <div class="step-title">Hapus branch lama (opsional tapi dianjurkan)</div>
+            <div class="step-desc">Setelah merge, GitHub akan menawarkan tombol "Delete branch". Klik untuk menjaga repo tetap rapi.</div>
+            <div class="code-block">
+              <div class="code-header">
+                <div style="display:flex;gap:6px"><div class="code-dot" style="background:#ff5f57"></div><div class="code-dot" style="background:#febc2e"></div><div class="code-dot" style="background:#28c840"></div></div>
+                <span class="code-lang">Terminal — Bersih-bersih setelah merge</span>
+                <button class="copy-btn" onclick="copyCode(this)">Salin</button>
+              </div>
+              <div class="code-body"><pre><span class="comment"># Ambil update main terbaru</span>
+<span class="prompt">$ </span><span class="cmd">git checkout</span> main
+<span class="prompt">$ </span><span class="cmd">git pull</span> origin main
+
+<span class="comment"># Hapus branch lokal yang sudah di-merge</span>
+<span class="prompt">$ </span><span class="cmd">git branch</span> <span class="flag">-d</span> feat/nama-fitur-kamu
+
+<span class="comment"># Hapus juga di GitHub (remote)</span>
+<span class="prompt">$ </span><span class="cmd">git push</span> origin <span class="flag">--delete</span> feat/nama-fitur-kamu</pre></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ═══════════════════════════════════════════ -->
+    <!-- SECTION: CONFLICT -->
+    <!-- ═══════════════════════════════════════════ -->
+    <section id="section-conflict" class="section">
+      <div class="section-heading">
+        <div class="section-number">⚔️</div>
+        <div class="section-heading-text">
+          <h2>Konflik Kode — Jangan Panik!</h2>
+          <p>Konflik terjadi saat dua orang ubah baris yang sama. Ini normal dan bisa diselesaikan.</p>
+        </div>
+      </div>
+
+      <div class="callout warn">
+        <div class="callout-icon">⚔️</div>
+        <div><strong>Konflik bukan berarti salah satu orang salah.</strong> Ini hanya berarti Git bingung versi mana yang harus dipakai. Tugasmu adalah memberitahu Git versi mana yang benar.</div>
+      </div>
+
+      <div class="card">
+        <div class="card-title"><div class="dot" style="background:var(--orange)"></div> Tampilan Konflik di File</div>
+        <div class="code-block" style="margin:12px 0 0">
+          <div class="code-header">
+            <div style="display:flex;gap:6px"><div class="code-dot" style="background:#ff5f57"></div><div class="code-dot" style="background:#febc2e"></div><div class="code-dot" style="background:#28c840"></div></div>
+            <span class="code-lang">Contoh konflik di file</span>
+          </div>
+          <div class="code-body"><pre><span class="comment"><<<<<<< HEAD (perubahan kamu)</span>
+  <span class="cmd">const voiceId</span> = <span class="str">'Kore'</span>;
+<span class="comment">======= (pemisah)</span>
+  <span class="cmd">const voiceId</span> = <span class="str">'Puck'</span>;
+<span class="comment">>>>>>>> feat/tambah-voice-selector (perubahan orang lain)</span></pre></div>
+        </div>
+        <div style="margin-top:12px;color:var(--text-dim);font-size:14px;line-height:1.7;">
+          Kamu harus <strong>memilih salah satu</strong> (atau gabungkan keduanya) lalu hapus semua tanda <code>&lt;&lt;&lt;</code>, <code>===</code>, dan <code>&gt;&gt;&gt;</code>.
+        </div>
+      </div>
+
+      <div class="steps">
+        <div class="step">
+          <div class="step-num">1</div>
+          <div class="step-body">
+            <div class="step-title">Update branch kamu dengan main terbaru</div>
+            <div class="code-block">
+              <div class="code-header">
+                <div style="display:flex;gap:6px"><div class="code-dot" style="background:#ff5f57"></div><div class="code-dot" style="background:#febc2e"></div><div class="code-dot" style="background:#28c840"></div></div>
+                <span class="code-lang">Terminal</span>
+                <button class="copy-btn" onclick="copyCode(this)">Salin</button>
+              </div>
+              <div class="code-body"><pre><span class="comment"># Pastikan kamu di branch kerja kamu</span>
+<span class="prompt">$ </span><span class="cmd">git checkout</span> feat/nama-fitur-kamu
+
+<span class="comment"># Ambil main terbaru</span>
+<span class="prompt">$ </span><span class="cmd">git fetch</span> origin
+
+<span class="comment"># Coba gabungkan main ke branch kamu</span>
+<span class="prompt">$ </span><span class="cmd">git merge</span> origin/main
+
+<span class="comment"># Jika ada konflik, Git akan memberitahu file mana yang bermasalah</span></pre></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="step">
+          <div class="step-num">2</div>
+          <div class="step-body">
+            <div class="step-title">Buka file yang konflik di VS Code</div>
+            <div class="step-desc">VS Code akan menampilkan tombol pilihan yang memudahkan: <strong>"Accept Current Change"</strong>, <strong>"Accept Incoming Change"</strong>, atau <strong>"Accept Both Changes"</strong>.</div>
+            <div class="callout tip">
+              <div class="callout-icon">💡</div>
+              <div>Kalau bingung harus pilih yang mana, tanya ke teman yang menulis kode yang konflik tersebut. Jangan asal pilih!</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="step">
+          <div class="step-num">3</div>
+          <div class="step-body">
+            <div class="step-title">Selesaikan konflik dan commit</div>
+            <div class="code-block">
+              <div class="code-header">
+                <div style="display:flex;gap:6px"><div class="code-dot" style="background:#ff5f57"></div><div class="code-dot" style="background:#febc2e"></div><div class="code-dot" style="background:#28c840"></div></div>
+                <span class="code-lang">Terminal</span>
+                <button class="copy-btn" onclick="copyCode(this)">Salin</button>
+              </div>
+              <div class="code-body"><pre><span class="comment"># Setelah semua konflik diselesaikan di editor</span>
+<span class="prompt">$ </span><span class="cmd">git add</span> .
+
+<span class="comment"># Commit untuk menyelesaikan merge</span>
+<span class="prompt">$ </span><span class="cmd">git commit</span> <span class="flag">-m</span> <span class="str">"chore: resolve merge conflict di App.tsx"</span>
+
+<span class="prompt">$ </span><span class="cmd">git push</span></pre></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ═══════════════════════════════════════════ -->
+    <!-- SECTION: UNDO -->
+    <!-- ═══════════════════════════════════════════ -->
+    <section id="section-undo" class="section">
+      <div class="section-heading">
+        <div class="section-number">⏪</div>
+        <div class="section-heading-text">
+          <h2>Batalkan Kesalahan</h2>
+          <p>Jangan panik. Hampir semua kesalahan di Git bisa diperbaiki.</p>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title"><div class="dot" style="background:var(--orange)"></div> Situasi 1: Belum commit, mau batalkan perubahan file</div>
+        <div class="code-block">
+          <div class="code-header">
+            <div style="display:flex;gap:6px"><div class="code-dot" style="background:#ff5f57"></div><div class="code-dot" style="background:#febc2e"></div><div class="code-dot" style="background:#28c840"></div></div>
+            <span class="code-lang">Terminal</span>
+            <button class="copy-btn" onclick="copyCode(this)">Salin</button>
+          </div>
+          <div class="code-body"><pre><span class="comment"># Batalkan perubahan di satu file tertentu</span>
+<span class="prompt">$ </span><span class="cmd">git checkout</span> -- src/App.tsx
+
+<span class="comment"># Batalkan SEMUA perubahan (hati-hati, tidak bisa di-undo!)</span>
+<span class="prompt">$ </span><span class="cmd">git checkout</span> -- .</pre></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title"><div class="dot" style="background:var(--orange)"></div> Situasi 2: Sudah commit, mau batalkan commit terakhir (tapi simpan perubahannya)</div>
+        <div class="code-block">
+          <div class="code-header">
+            <div style="display:flex;gap:6px"><div class="code-dot" style="background:#ff5f57"></div><div class="code-dot" style="background:#febc2e"></div><div class="code-dot" style="background:#28c840"></div></div>
+            <span class="code-lang">Terminal</span>
+            <button class="copy-btn" onclick="copyCode(this)">Salin</button>
+          </div>
+          <div class="code-body"><pre><span class="comment"># Batalkan commit terakhir, perubahan tetap ada di file</span>
+<span class="prompt">$ </span><span class="cmd">git reset</span> <span class="flag">--soft</span> HEAD~1</pre></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title"><div class="dot" style="background:var(--red)"></div> Situasi 3: Pesan commit salah, mau ganti</div>
+        <div class="code-block">
+          <div class="code-header">
+            <div style="display:flex;gap:6px"><div class="code-dot" style="background:#ff5f57"></div><div class="code-dot" style="background:#febc2e"></div><div class="code-dot" style="background:#28c840"></div></div>
+            <span class="code-lang">Terminal</span>
+            <button class="copy-btn" onclick="copyCode(this)">Salin</button>
+          </div>
+          <div class="code-body"><pre><span class="comment"># Ganti pesan commit terakhir (hanya jika belum di-push!)</span>
+<span class="prompt">$ </span><span class="cmd">git commit</span> <span class="flag">--amend</span> <span class="flag">-m</span> <span class="str">"feat: pesan yang benar"</span></pre></div>
+        </div>
+        <div class="callout danger">
+          <div class="callout-icon">🚨</div>
+          <div>Jangan gunakan <code>--amend</code> kalau commit sudah di-push ke GitHub! Ini bisa merusak history orang lain.</div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title"><div class="dot" style="background:var(--green)"></div> Situasi 4: Mau lihat semua commit untuk kembali ke titik tertentu</div>
+        <div class="code-block">
+          <div class="code-header">
+            <div style="display:flex;gap:6px"><div class="code-dot" style="background:#ff5f57"></div><div class="code-dot" style="background:#febc2e"></div><div class="code-dot" style="background:#28c840"></div></div>
+            <span class="code-lang">Terminal</span>
+            <button class="copy-btn" onclick="copyCode(this)">Salin</button>
+          </div>
+          <div class="code-body"><pre><span class="comment"># Lihat daftar commit dengan ID-nya</span>
+<span class="prompt">$ </span><span class="cmd">git log</span> <span class="flag">--oneline</span>
+<span class="comment"># Output contoh:</span>
+<span class="comment"># a3f2c1b feat: tambah export ZIP</span>
+<span class="comment"># 7e9d4a0 fix: panel detection error</span>
+<span class="comment"># 2b8f1c3 chore: install idb dan jszip</span>
+
+<span class="comment"># Kembali ke commit tertentu (buat branch baru dari sana)</span>
+<span class="prompt">$ </span><span class="cmd">git checkout</span> <span class="flag">-b</span> recovery/rollback 7e9d4a0</pre></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ═══════════════════════════════════════════ -->
+    <!-- SECTION: CHEAT SHEET -->
+    <!-- ═══════════════════════════════════════════ -->
+    <section id="section-cheatsheet" class="section">
+      <div class="section-heading">
+        <div class="section-number">📖</div>
+        <div class="section-heading-text">
+          <h2>Cheat Sheet Lengkap</h2>
+          <p>Semua command yang sering dipakai dalam satu halaman</p>
+        </div>
+      </div>
+
+      <input type="text" class="search-bar" placeholder="🔍 Cari command... (contoh: push, branch, merge)" oninput="filterCheatsheet(this.value)" />
+
+      <div id="cheatsheet-items">
+
+        <div class="card cheat-item" data-tags="setup awal clone pertama">
+          <div class="card-title"><div class="dot" style="background:var(--blue)"></div> Setup & Clone</div>
+          <div class="code-block"><div class="code-header"><div style="display:flex;gap:6px"><div class="code-dot" style="background:#ff5f57"></div><div class="code-dot" style="background:#febc2e"></div><div class="code-dot" style="background:#28c840"></div></div><span class="code-lang">Terminal</span><button class="copy-btn" onclick="copyCode(this)">Salin</button></div>
+          <div class="code-body"><pre>git clone [URL]           <span class="comment"># Download project ke laptop</span>
+git config --global user.name "Nama"
+git config --global user.email "email"</pre></div></div>
+        </div>
+
+        <div class="card cheat-item" data-tags="branch buat pindah list hapus checkout">
+          <div class="card-title"><div class="dot" style="background:var(--green)"></div> Branch</div>
+          <div class="code-block"><div class="code-header"><div style="display:flex;gap:6px"><div class="code-dot" style="background:#ff5f57"></div><div class="code-dot" style="background:#febc2e"></div><div class="code-dot" style="background:#28c840"></div></div><span class="code-lang">Terminal</span><button class="copy-btn" onclick="copyCode(this)">Salin</button></div>
+          <div class="code-body"><pre>git branch                <span class="comment"># Lihat semua branch</span>
+git checkout -b feat/xxx  <span class="comment"># Buat & pindah ke branch baru</span>
+git checkout main         <span class="comment"># Pindah ke branch main</span>
+git branch -d feat/xxx    <span class="comment"># Hapus branch lokal</span></pre></div></div>
+        </div>
+
+        <div class="card cheat-item" data-tags="pull ambil update terbaru fetch">
+          <div class="card-title"><div class="dot" style="background:var(--blue)"></div> Ambil Update Terbaru</div>
+          <div class="code-block"><div class="code-header"><div style="display:flex;gap:6px"><div class="code-dot" style="background:#ff5f57"></div><div class="code-dot" style="background:#febc2e"></div><div class="code-dot" style="background:#28c840"></div></div><span class="code-lang">Terminal</span><button class="copy-btn" onclick="copyCode(this)">Salin</button></div>
+          <div class="code-body"><pre>git pull origin main      <span class="comment"># Ambil & gabung dari main</span>
+git fetch origin          <span class="comment"># Ambil info saja, tidak gabung</span>
+git merge origin/main     <span class="comment"># Gabungkan dengan branch aktif</span></pre></div></div>
+        </div>
+
+        <div class="card cheat-item" data-tags="commit add status save simpan perubahan">
+          <div class="card-title"><div class="dot" style="background:var(--purple)"></div> Commit Perubahan</div>
+          <div class="code-block"><div class="code-header"><div style="display:flex;gap:6px"><div class="code-dot" style="background:#ff5f57"></div><div class="code-dot" style="background:#febc2e"></div><div class="code-dot" style="background:#28c840"></div></div><span class="code-lang">Terminal</span><button class="copy-btn" onclick="copyCode(this)">Salin</button></div>
+          <div class="code-body"><pre>git status                <span class="comment"># Lihat file yang berubah</span>
+git add .                 <span class="comment"># Tambah semua file</span>
+git add src/App.tsx       <span class="comment"># Tambah file tertentu</span>
+git commit -m "pesan"     <span class="comment"># Simpan dengan pesan</span>
+git log --oneline         <span class="comment"># Lihat riwayat commit</span></pre></div></div>
+        </div>
+
+        <div class="card cheat-item" data-tags="push upload github kirim">
+          <div class="card-title"><div class="dot" style="background:var(--orange)"></div> Push ke GitHub</div>
+          <div class="code-block"><div class="code-header"><div style="display:flex;gap:6px"><div class="code-dot" style="background:#ff5f57"></div><div class="code-dot" style="background:#febc2e"></div><div class="code-dot" style="background:#28c840"></div></div><span class="code-lang">Terminal</span><button class="copy-btn" onclick="copyCode(this)">Salin</button></div>
+          <div class="code-body"><pre>git push -u origin feat/xxx  <span class="comment"># Push pertama kali</span>
+git push                      <span class="comment"># Push selanjutnya</span>
+git push origin --delete feat/xxx  <span class="comment"># Hapus branch di GitHub</span></pre></div></div>
+        </div>
+
+        <div class="card cheat-item" data-tags="undo batalkan reset revert rollback">
+          <div class="card-title"><div class="dot" style="background:var(--red)"></div> Batalkan / Undo</div>
+          <div class="code-block"><div class="code-header"><div style="display:flex;gap:6px"><div class="code-dot" style="background:#ff5f57"></div><div class="code-dot" style="background:#febc2e"></div><div class="code-dot" style="background:#28c840"></div></div><span class="code-lang">Terminal</span><button class="copy-btn" onclick="copyCode(this)">Salin</button></div>
+          <div class="code-body"><pre>git checkout -- file.tsx     <span class="comment"># Batalkan perubahan file</span>
+git reset --soft HEAD~1      <span class="comment"># Batalkan commit terakhir</span>
+git commit --amend -m "xxx"  <span class="comment"># Ganti pesan commit</span>
+git stash                    <span class="comment"># Simpan sementara (belum commit)</span>
+git stash pop                <span class="comment"># Keluarkan dari stash</span></pre></div></div>
+        </div>
+
+        <div class="card cheat-item" data-tags="conflict konflik selesaikan">
+          <div class="card-title"><div class="dot" style="background:var(--orange)"></div> Atasi Konflik</div>
+          <div class="code-block"><div class="code-header"><div style="display:flex;gap:6px"><div class="code-dot" style="background:#ff5f57"></div><div class="code-dot" style="background:#febc2e"></div><div class="code-dot" style="background:#28c840"></div></div><span class="code-lang">Terminal</span><button class="copy-btn" onclick="copyCode(this)">Salin</button></div>
+          <div class="code-body"><pre>git fetch origin
+git merge origin/main        <span class="comment"># Trigger konflik muncul</span>
+<span class="comment"># → Edit file yang konflik di VS Code</span>
+git add .
+git commit -m "chore: resolve conflict"
+git push</pre></div></div>
+        </div>
+
+        <div class="card cheat-item" data-tags="npm install dev build jalankan project">
+          <div class="card-title"><div class="dot" style="background:var(--green)"></div> Jalankan Project PanelFlow</div>
+          <div class="code-block"><div class="code-header"><div style="display:flex;gap:6px"><div class="code-dot" style="background:#ff5f57"></div><div class="code-dot" style="background:#febc2e"></div><div class="code-dot" style="background:#28c840"></div></div><span class="code-lang">Terminal</span><button class="copy-btn" onclick="copyCode(this)">Salin</button></div>
+          <div class="code-body"><pre>npm install               <span class="comment"># Install dependencies</span>
+npm run dev               <span class="comment"># Jalankan development server</span>
+npm run build             <span class="comment"># Build untuk production</span>
+npm run lint              <span class="comment"># Cek TypeScript errors</span></pre></div></div>
+        </div>
+
+      </div>
+
+      <hr>
+      <div class="callout tip">
+        <div class="callout-icon">🚀</div>
+        <div><strong>Tips terakhir:</strong> Simpan file <code>KOLABORASI.html</code> ini di komputer dan buka kapanpun butuh panduan. Semua command bisa langsung disalin dengan tombol "Salin".</div>
+      </div>
+    </section>
+
+  </main>
+</div>
+
+<!-- MOBILE NAV -->
+<nav class="mob-nav">
+  <button class="mob-nav-btn active" onclick="showSection('intro')">🏠 Intro</button>
+  <button class="mob-nav-btn" onclick="showSection('setup')">⚙️ Setup</button>
+  <button class="mob-nav-btn" onclick="showSection('branch')">🌿 Branch</button>
+  <button class="mob-nav-btn" onclick="showSection('daily')">📅 Harian</button>
+  <button class="mob-nav-btn" onclick="showSection('push')">⬆️ Push</button>
+  <button class="mob-nav-btn" onclick="showSection('pr')">📋 PR</button>
+  <button class="mob-nav-btn" onclick="showSection('review')">👀 Review</button>
+  <button class="mob-nav-btn" onclick="showSection('merge')">✅ Merge</button>
+  <button class="mob-nav-btn" onclick="showSection('conflict')">⚔️ Konflik</button>
+  <button class="mob-nav-btn" onclick="showSection('undo')">⏪ Undo</button>
+  <button class="mob-nav-btn" onclick="showSection('cheatsheet')">📖 Cheat</button>
+</nav>
+
+<script>
+  function showSection(id) {
+    // Hide all sections
+    document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
+    // Show target
+    const target = document.getElementById('section-' + id);
+    if (target) target.classList.add('active');
+
+    // Update sidebar links
+    document.querySelectorAll('.sidebar-link').forEach(l => l.classList.remove('active'));
+    const sidebarBtn = [...document.querySelectorAll('.sidebar-link')].find(
+      b => b.getAttribute('onclick') === `showSection('${id}')`
+    );
+    if (sidebarBtn) sidebarBtn.classList.add('active');
+
+    // Update mobile nav
+    document.querySelectorAll('.mob-nav-btn').forEach(b => b.classList.remove('active'));
+    const mobBtn = [...document.querySelectorAll('.mob-nav-btn')].find(
+      b => b.getAttribute('onclick') === `showSection('${id}')`
+    );
+    if (mobBtn) mobBtn.classList.add('active');
+
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+
+  function copyCode(btn) {
+    const block = btn.closest('.code-block');
+    const pre = block.querySelector('pre');
+    // Get text without ANSI or HTML tags
+    const text = pre.innerText
+      .split('\n')
+      .map(line => line.replace(/^\$ /, ''))
+      .filter(line => !line.startsWith('#'))
+      .filter(line => line.trim())
+      .join('\n');
+
+    navigator.clipboard.writeText(text).then(() => {
+      btn.textContent = '✓ Tersalin!';
+      btn.classList.add('copied');
+      setTimeout(() => {
+        btn.textContent = 'Salin';
+        btn.classList.remove('copied');
+      }, 2000);
+    }).catch(() => {
+      // Fallback
+      const range = document.createRange();
+      range.selectNode(pre);
+      window.getSelection().removeAllRanges();
+      window.getSelection().addRange(range);
+      document.execCommand('copy');
+      window.getSelection().removeAllRanges();
+      btn.textContent = '✓ Tersalin!';
+      btn.classList.add('copied');
+      setTimeout(() => {
+        btn.textContent = 'Salin';
+        btn.classList.remove('copied');
+      }, 2000);
+    });
+  }
+
+  function filterCheatsheet(query) {
+    const q = query.toLowerCase();
+    document.querySelectorAll('.cheat-item').forEach(item => {
+      const tags = (item.dataset.tags || '').toLowerCase();
+      const text = item.innerText.toLowerCase();
+      item.style.display = (tags.includes(q) || text.includes(q)) ? 'block' : 'none';
+    });
+  }
+
+  // Keyboard shortcut: press numbers to jump to sections
+  const sections = ['intro','setup','branch','daily','push','pr','review','merge','conflict','undo','cheatsheet'];
+  document.addEventListener('keydown', (e) => {
+    if (e.target.tagName === 'INPUT') return;
+    const num = parseInt(e.key);
+    if (num >= 1 && num <= sections.length) {
+      showSection(sections[num - 1]);
+    }
+  });
+</script>
+</body>
+</html>

@@ -17,12 +17,22 @@ async function getDB(): Promise<IDBPDatabase> {
 
 export async function saveProjectToDB(project: Project): Promise<void> {
   const db = await getDB();
-  await db.put('projects', project, PROJECT_KEY);
+  await db.put('projects', project, project.id);
 }
 
-export async function loadProjectFromDB(): Promise<Project | null> {
+export async function loadProjectFromDB(id: string): Promise<Project | null> {
   const db = await getDB();
-  return (await db.get('projects', PROJECT_KEY)) ?? null;
+  return (await db.get('projects', id)) ?? null;
+}
+
+export async function getAllProjects(): Promise<Project[]> {
+  const db = await getDB();
+  return await db.getAll('projects');
+}
+
+export async function deleteProjectFromDB(id: string): Promise<void> {
+  const db = await getDB();
+  await db.delete('projects', id);
 }
 
 export async function exportProjectAsZip(project: Project): Promise<void> {

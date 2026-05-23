@@ -90,6 +90,10 @@ import { CSS } from '@dnd-kit/utilities';
 import { ManualPanelSelector } from './components/ManualPanelSelector';
 import { speak, getAvailableVoices } from './services/audio';
 
+import { Stepper } from "./components/ui/stepper";
+import { TutorialPanel } from "./components/TutorialPanel";
+import { ProjectDashboard } from "./components/ProjectDashboard";
+
 const generateId = () => `${Date.now()}-${Math.random().toString(36).substring(2, 15)}`;
 
 function SortableItem({ id, children, className }: { id: string, children: React.ReactNode, className?: string }) {
@@ -117,26 +121,8 @@ function SortableItem({ id, children, className }: { id: string, children: React
 }
 
 export default function App() {
-  const [project, setProject] = useState<Project>({
-    id: 'default',
-    name: 'Untitled Project',
-    categories: [
-      { id: 'manga', name: 'Manga', titleIds: [] },
-      { id: 'manhwa', name: 'Manhwa', titleIds: [] },
-      { id: 'manhua', name: 'Manhua', titleIds: [] }
-    ],
-    titles: [],
-    chapters: [],
-    settings: {
-      globalVoiceId: '',
-      globalSpeed: 1.0,
-      musicVolume: 0.5,
-      language: 'English',
-      exportResolution: '1080p',
-      exportQuality: 'High',
-      scriptLength: 'Normal',
-    }
-  });
+  const [project, setProject] = useState<Project | null>(null);
+  const [initialProjectLoad, setInitialProjectLoad] = useState(true);
 
   const [currentCategoryId, setCurrentCategoryId] = useState<string | null>(null);
   const [currentTitleId, setCurrentTitleId] = useState<string | null>(null);
@@ -146,32 +132,53 @@ export default function App() {
 
   const importInputRef = useRef<HTMLInputElement>(null);
 
-  // Load draft on mount — IndexedDB, fallback to localStorage for migration
   useEffect(() => {
-    (async () => {
-      try {
-        const saved = await loadProjectFromDB();
-        if (saved) {
-          setProject(saved);
-          toast.info('Loaded your last draft');
-          return;
-        }
-        // One-time migration from old localStorage draft
-        const legacy = localStorage.getItem('panelflow_project');
-        if (legacy) {
-          const parsed = JSON.parse(legacy);
-          setProject(parsed);
-          await saveProjectToDB(parsed);
-          localStorage.removeItem('panelflow_project');
-          toast.info('Draft migrated to IndexedDB');
-        }
-      } catch (e) {
-        console.error('Failed to load draft', e);
-      }
-    })();
+    const savedId = localStorage.getItem('panelflow_current_project');
+    if (savedId) {
+      import('./services/storage').then(m => m.loadProjectFromDB(savedId).then(p => {
+         if (p) setProject(p);
+         setInitialProjectLoad(false);
+      })).catch(() => setInitialProjectLoad(false));
+    } else {
+      setInitialProjectLoad(false);
+    }
   }, []);
 
+  useEffect(() => {
+    if (project) {
+       localStorage.setItem('panelflow_current_project', project.id);
+    } else {
+       localStorage.removeItem('panelflow_current_project');
+    }
+  }, [project?.id]);
+
+  const createNewProject = async () => {
+    const newProj: Project = {
+      id: generateId(),
+      name: 'Untitled Project',
+      categories: [
+        { id: 'manga', name: 'Manga', titleIds: [] },
+        { id: 'manhwa', name: 'Manhwa', titleIds: [] },
+        { id: 'manhua', name: 'Manhua', titleIds: [] }
+      ],
+      titles: [],
+      chapters: [],
+      settings: {
+        globalVoiceId: '',
+        globalSpeed: 1.0,
+        musicVolume: 0.5,
+        language: 'English',
+        exportResolution: '1080p',
+        exportQuality: 'High',
+        scriptLength: 'Normal',
+      }
+    };
+    setProject(newProj);
+    saveProjectToDB(newProj);
+  };
+
   const saveDraft = async () => {
+    if (!project) return;
     try {
       await saveProjectToDB(project);
       toast.success('Draft saved!');
@@ -224,6 +231,7 @@ export default function App() {
     const { active, over } = event;
     if (over && active.id !== over.id) {
       setProject((prev) => {
+        if (!prev) return prev;
         const currentChapterIndex = prev.chapters.findIndex((c: any) => c.id === prev.currentChapterId);
         if (currentChapterIndex === -1) return prev;
         
@@ -243,7 +251,7 @@ export default function App() {
     }
   };
 
-  const [activeTab, setActiveTab] = useState('upload');
+  const [currentStep, setCurrentStep] = useState(1);
   const [isProcessing, setIsProcessing] = useState(false);
   const [currentPanelIndex, setCurrentPanelIndex] = useState(-1);
   const [isPlaying, setIsPlaying] = useState(false);
@@ -366,7 +374,7 @@ export default function App() {
         currentChapterId: processedChapter.id
       }));
       toast.success(`Processed ${chapter.name} with ${allPanels.length} panels!`);
-      setActiveTab('edit');
+      setCurrentStep(2);
     } catch (e: any) {
       toast.error("Processing failed: " + e.message);
     } finally {
@@ -450,7 +458,7 @@ export default function App() {
             onClick={(e) => {
               e.stopPropagation();
               setProject(prev => ({ ...prev, currentChapterId: chapter.id }));
-              setActiveTab('edit');
+              setCurrentStep(2);
             }}
             className="h-7 px-3 bg-foreground/5 text-foreground/80 hover:text-black hover:bg-white rounded-full text-[9px] font-bold uppercase tracking-widest mr-2"
           >
@@ -489,20 +497,20 @@ export default function App() {
   // Auto-save to IndexedDB with 2s debounce whenever project changes
   useEffect(() => {
     const timer = setTimeout(() => {
-      saveProjectToDB(project).catch(console.error);
+      if (project) saveProjectToDB(project).catch(console.error);
     }, 2000);
     return () => clearTimeout(timer);
   }, [project]);
 
   // Load voices (now using Gemini TTS voices)
   useEffect(() => {
-    if (!project.settings.globalVoiceId) {
-      setProject(prev => ({
+    if (project && !project.settings.globalVoiceId) {
+      setProject(prev => prev ? ({
         ...prev,
         settings: { ...prev.settings, globalVoiceId: 'Kore' }
-      }));
+      }) : prev);
     }
-  }, [project.settings.globalVoiceId]);
+  }, [project?.settings?.globalVoiceId]);
 
   const [selectedPanelIds, setSelectedPanelIds] = useState<Set<string>>(new Set());
 
@@ -810,7 +818,7 @@ export default function App() {
     }
   };
 
-  const currentChapter = project.chapters.find(c => c.id === project.currentChapterId);
+  const currentChapter = project?.chapters?.find(c => c.id === project.currentChapterId);
 
   const handleGenerateScripts = async () => {
     if (!currentChapter) return;
@@ -1391,6 +1399,55 @@ export default function App() {
     }
   };
 
+
+  if (initialProjectLoad) return null;
+  if (!project) {
+    return (
+      <div className="min-h-screen bg-background text-foreground font-sans selection:bg-primary/30 transition-colors duration-300">
+        <Toaster position="top-center" theme="dark" />
+        <nav className="border-b border-border/50 bg-background/60 backdrop-blur-2xl sticky top-0 z-50 shadow-lg shadow-primary/10">
+          <div className="max-w-7xl mx-auto px-6 h-20 flex items-center justify-between">
+            <div className="flex items-center gap-4">
+              <div className="w-12 h-12 bg-blue-600 rounded-2xl flex items-center justify-center shadow-2xl shadow-blue-500/40 transform transition-transform hover:rotate-12">
+                <img src="/logo_light.png" className="w-8 h-8 object-contain dark:hidden" alt="PanelFlow Logo" />
+                <img src="/logo_dark.png" className="w-8 h-8 object-contain hidden dark:block" alt="PanelFlow Logo" />
+              </div>
+              <div>
+                <h1 className="font-black text-2xl tracking-tighter text-foreground">PanelFlow <span className="text-primary">AI</span></h1>
+                <div className="flex items-center gap-2">
+                  <span className="text-[9px] font-mono font-bold uppercase tracking-[0.3em] text-blue-400/60">Project Dashboard</span>
+                </div>
+              </div>
+            </div>
+            <ModeToggle />
+          </div>
+        </nav>
+        <ProjectDashboard 
+          onOpenProject={setProject} 
+          onNewProject={createNewProject} 
+          onImportProject={() => importInputRef.current?.click()} 
+        />
+        <input
+            ref={importInputRef}
+            type="file"
+            accept=".panelflow"
+            className="hidden"
+            onChange={async (e) => {
+              const file = e.target.files?.[0];
+              if (file) {
+                 try {
+                   const imported = await importProjectFromZip(file);
+                   setProject(imported);
+                   await saveProjectToDB(imported);
+                 } catch (err) {}
+              }
+              e.target.value = '';
+            }}
+          />
+      </div>
+    );
+  }
+
   return (
     <TooltipProvider>
       <div className="min-h-screen bg-background text-foreground font-sans selection:bg-primary/30 transition-colors duration-300">
@@ -1419,8 +1476,13 @@ export default function App() {
         <nav className="border-b border-blue-500/10 bg-background/60 backdrop-blur-2xl sticky top-0 z-50 shadow-lg shadow-primary/10 border-b border-border/50">
           <div className="max-w-7xl mx-auto px-6 h-20 flex items-center justify-between">
             <div className="flex items-center gap-4">
+              <Button variant="outline" size="sm" onClick={() => setProject(null)} className="mr-2 border-border/50 text-foreground/60 hover:text-foreground hidden sm:flex">
+                 <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="mr-2"><path d="m12 19-7-7 7-7"/><path d="M19 12H5"/></svg>
+                 Dashboard
+              </Button>
               <div className="w-12 h-12 bg-blue-600 rounded-2xl flex items-center justify-center shadow-2xl shadow-blue-500/40 transform transition-transform hover:rotate-12">
-                <img src="/logo.png" className="w-8 h-8 object-contain" alt="PanelFlow Logo" />
+                <img src="/logo_light.png" className="w-8 h-8 object-contain dark:hidden" alt="PanelFlow Logo" />
+                <img src="/logo_dark.png" className="w-8 h-8 object-contain hidden dark:block" alt="PanelFlow Logo" />
               </div>
               <div>
                 <h1 className="font-black text-2xl tracking-tighter text-foreground">PanelFlow <span className="text-primary">AI</span></h1>
@@ -1495,34 +1557,14 @@ export default function App() {
         </nav>
 
         <main className="max-w-7xl mx-auto px-6 py-8">
-          <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-8">
+          <div className="space-y-8 flex flex-col lg:flex-row gap-6">
+<div className="flex-1 w-full min-w-0">
+  <Stepper currentStep={currentStep} onStepChange={setCurrentStep} />
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-4">
-                <TabsList className="bg-white/[0.03] border border-border/50 p-1.5 h-14 rounded-2xl">
-                  <TabsTrigger 
-                    value="library" 
-                    className="data-[state=active]:bg-blue-600 data-[state=active]:text-foreground data-[state=active]:shadow-lg data-[state=active]:shadow-blue-500/20 px-8 rounded-xl gap-2.5 text-foreground/40 font-bold text-xs uppercase tracking-widest transition-all"
-                  >
-                    <Library className="w-4 h-4" />
-                    Library
-                  </TabsTrigger>
-                  <TabsTrigger 
-                    value="edit" 
-                    className="data-[state=active]:bg-blue-600 data-[state=active]:text-foreground data-[state=active]:shadow-lg data-[state=active]:shadow-blue-500/20 px-8 rounded-xl gap-2.5 text-foreground/40 font-bold text-xs uppercase tracking-widest transition-all"
-                  >
-                    <Layout className="w-4 h-4" />
-                    Edit
-                  </TabsTrigger>
-                  <TabsTrigger 
-                    value="exposure" 
-                    className="data-[state=active]:bg-fuchsia-600 data-[state=active]:text-foreground data-[state=active]:shadow-lg data-[state=active]:shadow-fuchsia-500/20 px-8 rounded-xl gap-2.5 text-foreground/40 font-bold text-xs uppercase tracking-widest transition-all"
-                  >
-                    <Sparkles className="w-4 h-4" />
-                    Videos
-                  </TabsTrigger>
-                </TabsList>
+                
 
-                {activeTab === 'edit' && currentChapter && (
+                {currentStep === 2 && currentChapter && (
                   <div className="flex items-center gap-3 animate-in fade-in slide-in-from-left-4 duration-500">
                     <Button 
                       variant="outline" 
@@ -1599,7 +1641,7 @@ export default function App() {
                 )}
               </div>
 
-              {activeTab === 'edit' && currentChapter && selectedPanelIds.size === 0 && (
+              {currentStep === 2 && currentChapter && selectedPanelIds.size === 0 && (
                 <div className="flex items-center gap-3">
                   <select 
                     value={project.settings.scriptLength || 'Normal'}
@@ -1623,7 +1665,7 @@ export default function App() {
             </div>
 
             <AnimatePresence mode="wait">
-              <TabsContent key="library-tab" value="library" className="m-0">
+              {currentStep === 1 && (<div className="animate-in fade-in slide-in-from-bottom-4 duration-500 m-0">
                 <motion.div
                   initial={{ opacity: 0, y: 20 }}
                   animate={{ opacity: 1, y: 0 }}
@@ -1892,7 +1934,7 @@ export default function App() {
                               <div 
                                 onClick={() => {
                                   setProject(prev => ({ ...prev, currentChapterId: chapter.id }));
-                                  setActiveTab('edit');
+                                  setCurrentStep(2);
                                 }}
                                 className={`
                                 bg-background relative
@@ -1928,7 +1970,7 @@ export default function App() {
                                     <Button 
                                       onClick={() => {
                                         setProject(prev => ({ ...prev, currentChapterId: chapter.id }));
-                                        setActiveTab('edit');
+                                        setCurrentStep(2);
                                       }}
                                       className="bg-zinc-100/90 text-black font-black text-[10px] uppercase tracking-widest rounded-xl h-8 px-4"
                                     >
@@ -1975,9 +2017,9 @@ export default function App() {
                     </div>
                   )}
                 </motion.div>
-              </TabsContent>
+              </div>)}
 
-              <TabsContent key="edit-tab" value="edit" className="m-0">
+              {currentStep === 2 && (<div className="animate-in fade-in slide-in-from-bottom-4 duration-500 m-0">
                 <motion.div 
                   key="edit-content"
                   initial={{ opacity: 0, x: 20 }}
@@ -1997,7 +2039,7 @@ export default function App() {
                           Select a chapter from the Library to start editing its panels, adding scripts, and generating audio.
                         </p>
                         <Button 
-                          onClick={() => setActiveTab('library')}
+                          onClick={() => setCurrentStep(1)}
                           className="bg-blue-600 hover:bg-blue-700 text-foreground px-10 h-14 rounded-2xl font-black text-xs uppercase tracking-[0.2em]"
                         >
                           Go to Library
@@ -2471,7 +2513,7 @@ export default function App() {
                           variant="ghost" 
                           size="icon" 
                           className="h-8 w-8 text-foreground/40 hover:text-foreground hover:bg-foreground/5 rounded-full"
-                          onClick={() => setActiveTab('library')}
+                          onClick={() => setCurrentStep(1)}
                         >
                           <Library className="w-4 h-4" />
                         </Button>
@@ -2529,7 +2571,7 @@ export default function App() {
                             <Button 
                               variant="outline" 
                               size="sm"
-                              onClick={() => setActiveTab('library')}
+                              onClick={() => setCurrentStep(1)}
                               className="border-border bg-foreground/5 hover:bg-foreground/10 text-[10px] font-bold uppercase tracking-widest h-9 px-6 rounded-xl"
                             >
                               Go to Library
@@ -2794,9 +2836,9 @@ export default function App() {
                     </Card>
                   </div>
                 </motion.div>
-              </TabsContent>
+              </div>)}
 
-              <TabsContent key="preview-tab" value="preview" className="m-0">
+              {currentStep === 3 && (<div className="animate-in fade-in slide-in-from-bottom-4 duration-500 m-0">
                 <motion.div 
                   key="preview-content"
                   initial={{ opacity: 0, scale: 0.95 }}
@@ -2898,9 +2940,9 @@ export default function App() {
                     </Button>
                   </div>
                 </motion.div>
-              </TabsContent>
+              </div>)}
 
-              <TabsContent value="exposure" className="mt-0">
+              {currentStep === 3 && (<div className="animate-in fade-in slide-in-from-bottom-4 duration-500">
                 <div className="max-w-3xl mx-auto space-y-8 animate-in fade-in slide-in-from-bottom-8 duration-700 pb-20">
                   <div className="flex items-center justify-between">
                     <div>
@@ -2972,9 +3014,15 @@ export default function App() {
                     </div>
                   )}
                 </div>
-              </TabsContent>
+              </div>)}
             </AnimatePresence>
-          </Tabs>
+          </div>
+  <div className="w-full lg:w-[350px] flex-shrink-0">
+    <div className="sticky top-[100px] h-[calc(100vh-140px)]">
+      <TutorialPanel step={currentStep} />
+    </div>
+  </div>
+</div>
         </main>
 
         <Dialog open={isAddTitleDialogOpen} onOpenChange={setIsAddTitleDialogOpen}>
