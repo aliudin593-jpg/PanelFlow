@@ -303,13 +303,20 @@ export async function detectPanels(pageImageUrl: string) {
   const optimizedImage = await downscaleForAI(pageImageUrl, 1024, 6000);
 
   const prompt = `
-    Analyze this comic/webtoon page and identify the bounding boxes of ALL distinct illustrated panels, scenes, or character portraits.
+    Analyze this comic/webtoon page and identify the bounding boxes of ALL active characters, main visual figures, and character portraits/faces.
     
-    CRITICAL RULES:
-    1. Identify every individual comic panel. You MUST locate and outline the art/characters being shown.
-    2. Try to exclude large blank gutters or borders.
-    3. You must output at least one bounding box. Never return an empty array.
-    4. Focus on where the main action, faces, or artwork is.
+    CRITICAL FOCUS GUIDELINES (CHARACTER ONLY):
+    1. Your primary goal is to focus snug and tight ONLY on the characters (people, figures, creatures), their physical bodies, action poses, and facial expressions.
+    2. DO NOT capture general empty spaces, backgrounds, wide scenic views, or the entire outer rectangular frames of comic panels if they contain large empty gaps. Shrink the bounding box so that it tightly wraps around the characters' physical silhouettes (torso, head, or close-up facial view).
+    3. If a panel contains multiple characters, you should generate either a single snug box that tightly encloses them together, or distinct snug boxes focusing on individual characters to highlight their gestures and expressions clearly in the video.
+    4. Exclude all solid black/white empty gutters, surrounding margin frames, blank spaces, speech bubbles with no characters next to them, and template dividers.
+    5. The resulting boxes must be tightly locked onto the character action to make the resulting animated video super engaging. You must output at least one bounding box. Never return an empty array.
+    
+    WATERMARK & LOGO EXCLUSION PROTOCOL (CRITICAL):
+    1. Learn to accurately differentiate between actual illustrated comic panels and watermarks/logos/site stamps.
+    2. Watermarks, translator/scanlation brand names (e.g., circular badges, scanning logos), site domains (e.g., text URLs like "asuracans.com", "mangadex.org"), and credit/notice texts are NOT comic panels. You MUST exclude them entirely.
+    3. NEVER include a bounding box that is just a watermark, brand watermark, logo, or credit stamp.
+    4. If a watermark or website logo/text falls near the edges or boundaries of a real illustrated comic group, shrink or adjust that panel's bounding box coordinates to completely crop it out. The final panel crop must contain only the pure comic artwork, with all watermarks and site logos completely removed.
     
     Return the coordinates as normalized values (0 to 1000) for x, y, width, and height.
     Ensure panels are returned in the correct manga reading order (top-to-bottom, then right-to-left).

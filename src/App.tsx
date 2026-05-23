@@ -31,10 +31,15 @@ import {
   ChevronLeft,
   Edit,
   Grid,
+  Grid3X3,
+  LayoutGrid,
+  Square,
   List,
   MoreVertical,
   Sparkles,
-  Layers
+  Layers,
+  Smartphone,
+  Video
 } from 'lucide-react';
 import { useDropzone } from 'react-dropzone';
 import { toast, Toaster } from 'sonner';
@@ -847,8 +852,25 @@ export default function App() {
       const ctx = canvas.getContext('2d');
       if (!ctx) throw new Error("Could not create canvas context");
 
-      canvas.width = 1920;
-      canvas.height = 1080;
+      // Set dimensions dynamically based on aspect ratio/videoFormat and resolution
+      let width = 1920;
+      let height = 1080;
+      const isVertical = project.settings.videoFormat === 'vertical';
+      const resolution = project.settings.exportResolution || '1080p';
+
+      if (resolution === '720p') {
+        width = isVertical ? 720 : 1280;
+        height = isVertical ? 1280 : 720;
+      } else if (resolution === '4K') {
+        width = isVertical ? 2160 : 3840;
+        height = isVertical ? 3840 : 2160;
+      } else { // 1080p
+        width = isVertical ? 1080 : 1920;
+        height = isVertical ? 1920 : 1080;
+      }
+
+      canvas.width = width;
+      canvas.height = height;
 
       // Use a higher frame rate for smoother video
       const stream = canvas.captureStream(30);
@@ -909,17 +931,167 @@ export default function App() {
 
       mediaRecorder.start(100); // Collect data every 100ms
 
-      const drawFrame = (img: HTMLImageElement) => {
-        ctx.fillStyle = '#000000';
-        ctx.fillRect(0, 0, canvas.width, canvas.height);
+      const drawTextWithWrappingAndStroke = (text: string, x: number, y: number, maxWidth: number, lineHeight: number) => {
+        ctx.save();
+        ctx.font = 'bold 44px "Inter", "Arial", sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'bottom';
         
-        const scale = Math.min(canvas.width / img.width, canvas.height / img.height);
-        const x = (canvas.width / 2) - (img.width / 2) * scale;
-        const y = (canvas.height / 2) - (img.height / 2) * scale;
-        
-        // Add a subtle vignette or background blur for better look
-        ctx.drawImage(img, x, y, img.width * scale, img.height * scale);
+        ctx.strokeStyle = '#000000';
+        ctx.lineWidth = 12;
+        ctx.lineJoin = 'round';
+        ctx.fillStyle = '#FFFFFF';
+
+        const words = text.split(' ');
+        const lines: string[] = [];
+        let currentLine = '';
+
+        for (let j = 0; j < words.length; j++) {
+          const testLine = currentLine ? currentLine + ' ' + words[j] : words[j];
+          const metrics = ctx.measureText(testLine);
+          if (metrics.width > maxWidth && currentLine) {
+            lines.push(currentLine);
+            currentLine = words[j];
+          } else {
+            currentLine = testLine;
+          }
+        }
+        if (currentLine) {
+          lines.push(currentLine);
+        }
+
+        const startY = y - (lines.length - 1) * lineHeight;
+
+        for (let k = 0; k < lines.length; k++) {
+          const lineY = startY + (k * lineHeight);
+          ctx.strokeText(lines[k], x, lineY);
+          ctx.fillText(lines[k], x, lineY);
+        }
+        ctx.restore();
       };
+
+      const drawImageWithBlurBackground = (
+        ctx: CanvasRenderingContext2D,
+        img: HTMLImageElement,
+        blurredBgCanvas: HTMLCanvasElement | null,
+        opacity: number = 1,
+        scaleFactor: number = 1,
+        offsetX: number = 0,
+        offsetY: number = 0
+      ) => {
+        ctx.save();
+        ctx.globalAlpha = opacity;
+
+        // 1. Draw the pre-rendered blurred background
+        if (blurredBgCanvas) {
+          ctx.drawImage(blurredBgCanvas, 0, 0, canvas.width, canvas.height);
+        } else {
+          ctx.fillStyle = '#12131a';
+          ctx.fillRect(0, 0, canvas.width, canvas.height);
+        }
+
+        // 2. Draw centered image with a subtle, highly performant drop shadow
+        const scale = Math.min(canvas.width / img.width, canvas.height / img.height) * scaleFactor;
+        const dw = img.width * scale;
+        const dh = img.height * scale;
+        const x = (canvas.width / 2) - (dw / 2) + offsetX;
+        const y = (canvas.height / 2) - (dh / 2) + offsetY;
+        
+        ctx.shadowColor = 'rgba(0, 0, 0, 0.55)';
+        ctx.shadowBlur = 15;
+        ctx.shadowOffsetX = 0;
+        ctx.shadowOffsetY = 6;
+
+        ctx.drawImage(img, x, y, dw, dh);
+        ctx.restore();
+      };
+
+      const drawTransitionFrame = (
+        ctx: CanvasRenderingContext2D,
+        prevImg: HTMLImageElement | null,
+        prevBgCanvas: HTMLCanvasElement | null,
+        currentImg: HTMLImageElement,
+        currentBgCanvas: HTMLCanvasElement | null,
+        style: string,
+        t: number,
+        scriptText?: string
+      ) => {
+        // Clear background
+        ctx.fillStyle = '#12131a';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        if (!prevImg) {
+          // First image transition (fade & zoom in from background/black)
+          const opacity = t;
+          const scale = 0.95 + 0.05 * t;
+          drawImageWithBlurBackground(ctx, currentImg, currentBgCanvas, opacity, scale, 0, 0);
+        } else {
+          switch (style) {
+            case 'fade':
+              // Fade out old, fade in new
+              drawImageWithBlurBackground(ctx, prevImg, prevBgCanvas, 1 - t, 1, 0, 0);
+              drawImageWithBlurBackground(ctx, currentImg, currentBgCanvas, t, 1, 0, 0);
+              break;
+            case 'zoom-in':
+              drawImageWithBlurBackground(ctx, prevImg, prevBgCanvas, 1 - t, 1 + t * 0.1, 0, 0);
+              drawImageWithBlurBackground(ctx, currentImg, currentBgCanvas, t, 0.85 + t * 0.15, 0, 0);
+              break;
+            case 'zoom-out':
+              drawImageWithBlurBackground(ctx, prevImg, prevBgCanvas, 1 - t, 1.0 - t * 0.1, 0, 0);
+              drawImageWithBlurBackground(ctx, currentImg, currentBgCanvas, t, 1.15 - t * 0.15, 0, 0);
+              break;
+            case 'slide-left':
+              drawImageWithBlurBackground(ctx, prevImg, prevBgCanvas, 1 - t, 1, -canvas.width * t, 0);
+              drawImageWithBlurBackground(ctx, currentImg, currentBgCanvas, t, 1, canvas.width * (1 - t), 0);
+              break;
+            case 'slide-right':
+              drawImageWithBlurBackground(ctx, prevImg, prevBgCanvas, 1 - t, 1, canvas.width * t, 0);
+              drawImageWithBlurBackground(ctx, currentImg, currentBgCanvas, t, 1, -canvas.width * (1 - t), 0);
+              break;
+            case 'slide-up':
+              drawImageWithBlurBackground(ctx, prevImg, prevBgCanvas, 1 - t, 1, 0, -canvas.height * t);
+              drawImageWithBlurBackground(ctx, currentImg, currentBgCanvas, t, 1, 0, canvas.height * (1 - t));
+              break;
+            case 'slide-down':
+              drawImageWithBlurBackground(ctx, prevImg, prevBgCanvas, 1 - t, 1, 0, canvas.height * t);
+              drawImageWithBlurBackground(ctx, currentImg, currentBgCanvas, t, 1, 0, -canvas.height * (1 - t));
+              break;
+            default:
+              drawImageWithBlurBackground(ctx, currentImg, currentBgCanvas, t, 1, 0, 0);
+              break;
+          }
+        }
+
+        if (scriptText && scriptText.trim()) {
+          const scale = Math.min(canvas.width / currentImg.width, canvas.height / currentImg.height);
+          const dw = currentImg.width * scale;
+          const dh = currentImg.height * scale;
+          const y = (canvas.height / 2) - (dh / 2);
+          
+          const maxWidth = Math.max(canvas.width * 0.75, dw - 60);
+          const subY = Math.min(canvas.height - 120, (y + dh) - 45);
+          drawTextWithWrappingAndStroke(scriptText.trim(), canvas.width / 2, subY, maxWidth, 55);
+        }
+      };
+
+      const drawFrame = (img: HTMLImageElement, bgCanvas: HTMLCanvasElement | null, scriptText?: string) => {
+        drawImageWithBlurBackground(ctx, img, bgCanvas, 1, 1, 0, 0);
+        if (scriptText && scriptText.trim()) {
+          const scale = Math.min(canvas.width / img.width, canvas.height / img.height);
+          const dw = img.width * scale;
+          const dh = img.height * scale;
+          const y = (canvas.height / 2) - (dh / 2);
+          const maxWidth = Math.max(canvas.width * 0.75, dw - 60);
+          const subY = Math.min(canvas.height - 120, (y + dh) - 45);
+          drawTextWithWrappingAndStroke(scriptText.trim(), canvas.width / 2, subY, maxWidth, 55);
+        }
+      };
+
+      // Map to hold pre-rendered blurred background canvases for ultra-fast render loop performance
+      const blurredBackgroundsMap = new Map<string, HTMLCanvasElement>();
+
+      let prevImg: HTMLImageElement | null = null;
+      let prevBgCanvas: HTMLCanvasElement | null = null;
 
       for (let i = 0; i < currentChapter.panels.length; i++) {
         const panel = currentChapter.panels[i];
@@ -931,12 +1103,49 @@ export default function App() {
           img.onerror = reject;
         });
 
+        // Pre-render blurred background canvas for this panel
+        try {
+          const bgCanvas = document.createElement('canvas');
+          // Downsample background to 225x400 for vertical layout OR 400x225 for landscape for instant processing
+          bgCanvas.width = isVertical ? 225 : 400;
+          bgCanvas.height = isVertical ? 400 : 225;
+          const bgCtx = bgCanvas.getContext('2d');
+          if (bgCtx) {
+            bgCtx.imageSmoothingEnabled = true;
+            try {
+              bgCtx.filter = 'blur(3.5px)'; // Reduced blur radius for dynamic clarity and recognizable artwork
+            } catch (e) {}
+            
+            const bgScale = Math.max(bgCanvas.width / img.width, bgCanvas.height / img.height) * 1.15;
+            const bgW = img.width * bgScale;
+            const bgH = img.height * bgScale;
+            const bgX = (bgCanvas.width - bgW) / 2;
+            const bgY = (bgCanvas.height - bgH) / 2;
+            bgCtx.drawImage(img, bgX, bgY, bgW, bgH);
+            
+            try {
+              bgCtx.filter = 'none';
+            } catch (e) {}
+            
+            // Draw lighter semi-transparent overlay to ensure clear and bright background representation
+            bgCtx.fillStyle = 'rgba(0, 0, 0, 0.23)';
+            bgCtx.fillRect(0, 0, bgCanvas.width, bgCanvas.height);
+          }
+          blurredBackgroundsMap.set(panel.id, bgCanvas);
+        } catch (err) {
+          console.error("Failed to generate blurred background for panel:", panel.id, err);
+        }
+
+        const currentBgCanvas = blurredBackgroundsMap.get(panel.id) || null;
+
+        // PowerPoint-like sequential styles
+        const transitionStyles = ['fade', 'slide-left', 'slide-right', 'zoom-in', 'slide-up', 'zoom-out', 'slide-down'];
+        const transitionStyle = transitionStyles[i % transitionStyles.length];
+
         const audioData = audioDataMap.get(panel.id);
         let duration = 2.0; // Default 2 seconds if no audio
 
-        drawFrame(img);
-        
-        // Keep drawing a tiny invisible pixel to keep MediaRecorder alive
+        // Keep drawing a tiny invisible pixel to keep MediaRecorder alive during quiet times
         const keepAliveInterval = setInterval(() => {
           ctx.fillStyle = `rgba(255,255,255,0.001)`;
           ctx.fillRect(0,0,1,1);
@@ -956,27 +1165,79 @@ export default function App() {
             duration = audioBuffer.duration / project.settings.globalSpeed;
             source.playbackRate.value = project.settings.globalSpeed;
             
-            await new Promise<void>((resolve) => {
-              let resolved = false;
-              source.onended = () => {
-                if (!resolved) { resolved = true; resolve(); }
-              };
-              source.start();
-              
-              // Fallback timeout just in case
-              setTimeout(() => {
-                if (!resolved) { resolved = true; resolve(); }
-              }, (duration * 1000) + 200);
-            });
+            source.start();
+
+            // Run Transition Animation
+            const transitionDuration = Math.min(0.6, duration * 0.4);
+            const fps = 30;
+            const totalTransitionFrames = Math.round(transitionDuration * fps);
+            const frameInterval = 1000 / fps;
+            const startTime = Date.now();
+
+            for (let f = 0; f <= totalTransitionFrames; f++) {
+              const t = f / totalTransitionFrames;
+              drawTransitionFrame(ctx, prevImg, prevBgCanvas, img, currentBgCanvas, transitionStyle, t, panel.script);
+              await new Promise(resolve => setTimeout(resolve, frameInterval));
+            }
+
+            // Lock stable frame
+            drawTransitionFrame(ctx, prevImg, prevBgCanvas, img, currentBgCanvas, transitionStyle, 1.0, panel.script);
+
+            // Wait until audio finished playing
+            const elapsed = (Date.now() - startTime) / 1000;
+            const remaining = duration - elapsed;
+            if (remaining > 0) {
+              await new Promise(resolve => setTimeout(resolve, remaining * 1000));
+            }
           } catch (e) {
             console.error("Audio decode error:", e);
-            await new Promise(resolve => setTimeout(resolve, duration * 1000));
+            // Fallback render loop transitions
+            const transitionDuration = Math.min(0.6, duration * 0.4);
+            const fps = 30;
+            const totalTransitionFrames = Math.round(transitionDuration * fps);
+            const frameInterval = 1000 / fps;
+            const startTime = Date.now();
+
+            for (let f = 0; f <= totalTransitionFrames; f++) {
+              const t = f / totalTransitionFrames;
+              drawTransitionFrame(ctx, prevImg, prevBgCanvas, img, currentBgCanvas, transitionStyle, t, panel.script);
+              await new Promise(resolve => setTimeout(resolve, frameInterval));
+            }
+
+            drawTransitionFrame(ctx, prevImg, prevBgCanvas, img, currentBgCanvas, transitionStyle, 1.0, panel.script);
+
+            const elapsed = (Date.now() - startTime) / 1000;
+            const remaining = duration - elapsed;
+            if (remaining > 0) {
+              await new Promise(resolve => setTimeout(resolve, remaining * 1000));
+            }
           }
         } else {
-          await new Promise(resolve => setTimeout(resolve, duration * 1000));
+          // Standard animated playback fallback transition
+          const transitionDuration = Math.min(0.6, duration * 0.4);
+          const fps = 30;
+          const totalTransitionFrames = Math.round(transitionDuration * fps);
+          const frameInterval = 1000 / fps;
+          const startTime = Date.now();
+
+          for (let f = 0; f <= totalTransitionFrames; f++) {
+            const t = f / totalTransitionFrames;
+            drawTransitionFrame(ctx, prevImg, prevBgCanvas, img, currentBgCanvas, transitionStyle, t, panel.script);
+            await new Promise(resolve => setTimeout(resolve, frameInterval));
+          }
+
+          drawTransitionFrame(ctx, prevImg, prevBgCanvas, img, currentBgCanvas, transitionStyle, 1.0, panel.script);
+
+          const elapsed = (Date.now() - startTime) / 1000;
+          const remaining = duration - elapsed;
+          if (remaining > 0) {
+            await new Promise(resolve => setTimeout(resolve, remaining * 1000));
+          }
         }
 
         clearInterval(keepAliveInterval);
+        prevImg = img;
+        prevBgCanvas = currentBgCanvas;
         setExportProgress(40 + Math.round(((i + 1) / totalPanels) * 60));
       }
 
@@ -1362,17 +1623,17 @@ export default function App() {
                         </div>
                         <div className="flex items-center gap-4">
                           <div className="flex items-center bg-white/5 p-1 rounded-xl border border-white/5 hidden md:flex">
-                            <Button variant="ghost" size="icon" onClick={() => setTitleViewMode('list')} className={`h-8 w-8 rounded-lg transition-all ${titleViewMode === 'list' ? 'bg-blue-600 text-white shadow-lg shadow-blue-500/20' : 'text-white/40 hover:text-white hover:bg-white/5'}`}>
+                            <Button variant="ghost" size="icon" title="List View" onClick={() => setTitleViewMode('list')} className={`h-8 w-8 rounded-lg transition-all ${titleViewMode === 'list' ? 'bg-blue-600 text-white shadow-lg shadow-blue-500/20' : 'text-white/40 hover:text-white hover:bg-white/5'}`}>
                               <List className="w-4 h-4" />
                             </Button>
-                            <Button variant="ghost" size="icon" onClick={() => setTitleViewMode('grid-sm')} className={`h-8 w-8 rounded-lg transition-all ${titleViewMode === 'grid-sm' ? 'bg-blue-600 text-white shadow-lg shadow-blue-500/20' : 'text-white/40 hover:text-white hover:bg-white/5'}`}>
-                              <Grid className="w-3.5 h-3.5" />
+                            <Button variant="ghost" size="icon" title="Small Tiles Grid" onClick={() => setTitleViewMode('grid-sm')} className={`h-8 w-8 rounded-lg transition-all ${titleViewMode === 'grid-sm' ? 'bg-blue-600 text-white shadow-lg shadow-blue-500/20' : 'text-white/40 hover:text-white hover:bg-white/5'}`}>
+                              <Grid3X3 className="w-4 h-4" />
                             </Button>
-                            <Button variant="ghost" size="icon" onClick={() => setTitleViewMode('grid-md')} className={`h-8 w-8 rounded-lg transition-all ${titleViewMode === 'grid-md' ? 'bg-blue-600 text-white shadow-lg shadow-blue-500/20' : 'text-white/40 hover:text-white hover:bg-white/5'}`}>
-                              <Grid className="w-4 h-4" />
+                            <Button variant="ghost" size="icon" title="Medium Tiles Grid" onClick={() => setTitleViewMode('grid-md')} className={`h-8 w-8 rounded-lg transition-all ${titleViewMode === 'grid-md' ? 'bg-blue-600 text-white shadow-lg shadow-blue-500/20' : 'text-white/40 hover:text-white hover:bg-white/5'}`}>
+                              <LayoutGrid className="w-4 h-4" />
                             </Button>
-                            <Button variant="ghost" size="icon" onClick={() => setTitleViewMode('grid-lg')} className={`h-8 w-8 rounded-lg transition-all ${titleViewMode === 'grid-lg' ? 'bg-blue-600 text-white shadow-lg shadow-blue-500/20' : 'text-white/40 hover:text-white hover:bg-white/5'}`}>
-                              <Grid className="w-5 h-5" />
+                            <Button variant="ghost" size="icon" title="Large Panels Grid" onClick={() => setTitleViewMode('grid-lg')} className={`h-8 w-8 rounded-lg transition-all ${titleViewMode === 'grid-lg' ? 'bg-blue-600 text-white shadow-lg shadow-blue-500/20' : 'text-white/40 hover:text-white hover:bg-white/5'}`}>
+                              <Square className="w-4 h-4" />
                             </Button>
                           </div>
                           <Button 
@@ -1384,12 +1645,13 @@ export default function App() {
                         </div>
                       </div>
 
-                      <div className={`grid gap-6 ${
-                        titleViewMode === 'list' ? 'grid-cols-1' :
-                        titleViewMode === 'grid-sm' ? 'grid-cols-2 md:grid-cols-4 lg:grid-cols-6' :
-                        titleViewMode === 'grid-md' ? 'grid-cols-1 md:grid-cols-3 lg:grid-cols-4' :
-                        'grid-cols-1 md:grid-cols-2 lg:grid-cols-3'
-                      }`}>
+                      <div className={`
+                        grid
+                        ${titleViewMode === 'list' ? 'grid-cols-1 gap-6' : ''}
+                        ${titleViewMode === 'grid-sm' ? 'grid-cols-3 md:grid-cols-5 lg:grid-cols-7 xl:grid-cols-8 gap-3 lg:gap-4' : ''}
+                        ${titleViewMode === 'grid-md' ? 'grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-4 gap-6' : ''}
+                        ${titleViewMode === 'grid-lg' ? 'grid-cols-1 lg:grid-cols-2 xl:grid-cols-2 gap-8' : ''}
+                      `}>
                         {project.titles.filter(t => t.categoryId === currentCategoryId).map(title => (
                           <Card 
                             key={title.id}
@@ -1466,26 +1728,29 @@ export default function App() {
                             <Button 
                               variant="ghost" 
                               size="icon" 
+                              title="Small Tiles Grid"
                               onClick={() => setChapterViewMode('grid-sm')}
                               className={`h-8 w-8 rounded-lg transition-all ${chapterViewMode === 'grid-sm' ? 'bg-blue-600 text-white shadow-lg shadow-blue-500/20' : 'text-white/40 hover:text-white hover:bg-white/5'}`}
                             >
-                              <Grid className="w-3.5 h-3.5" />
+                              <Grid3X3 className="w-4 h-4" />
                             </Button>
                             <Button 
                               variant="ghost" 
                               size="icon" 
+                              title="Medium Tiles Grid"
                               onClick={() => setChapterViewMode('grid-md')}
                               className={`h-8 w-8 rounded-lg transition-all ${chapterViewMode === 'grid-md' ? 'bg-blue-600 text-white shadow-lg shadow-blue-500/20' : 'text-white/40 hover:text-white hover:bg-white/5'}`}
                             >
-                              <Grid className="w-4 h-4" />
+                              <LayoutGrid className="w-4 h-4" />
                             </Button>
                             <Button 
                               variant="ghost" 
                               size="icon" 
+                              title="Large Panels Grid"
                               onClick={() => setChapterViewMode('grid-lg')}
                               className={`h-8 w-8 rounded-lg transition-all ${chapterViewMode === 'grid-lg' ? 'bg-blue-600 text-white shadow-lg shadow-blue-500/20' : 'text-white/40 hover:text-white hover:bg-white/5'}`}
                             >
-                              <Grid className="w-5 h-5" />
+                              <Square className="w-4 h-4" />
                             </Button>
                           </div>
                           {selectedLibraryChapterIds.size > 0 && (
@@ -1503,11 +1768,11 @@ export default function App() {
                       </div>
 
                       <div className={`
-                        grid gap-6
-                        ${chapterViewMode === 'list' ? 'grid-cols-1' : ''}
-                        ${chapterViewMode === 'grid-sm' ? 'grid-cols-2 md:grid-cols-4 lg:grid-cols-6' : ''}
-                        ${chapterViewMode === 'grid-md' ? 'grid-cols-1 md:grid-cols-2 lg:grid-cols-3' : ''}
-                        ${chapterViewMode === 'grid-lg' ? 'grid-cols-1 md:grid-cols-2' : ''}
+                        grid
+                        ${chapterViewMode === 'list' ? 'grid-cols-1 gap-6' : ''}
+                        ${chapterViewMode === 'grid-sm' ? 'grid-cols-3 md:grid-cols-5 lg:grid-cols-7 xl:grid-cols-8 gap-3 lg:gap-4' : ''}
+                        ${chapterViewMode === 'grid-md' ? 'grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-4 gap-6' : ''}
+                        ${chapterViewMode === 'grid-lg' ? 'grid-cols-1 lg:grid-cols-2 xl:grid-cols-2 gap-8' : ''}
                       `}>
                         {project.chapters.filter(c => c.titleId === currentTitleId).map(chapter => (
                           chapterViewMode === 'list' ? (
@@ -1750,17 +2015,41 @@ export default function App() {
                               <div className="w-px h-6 bg-white/10 hidden lg:block" />
 
                               <div className="flex items-center bg-white/5 p-1 rounded-xl border border-white/5 hidden xl:flex lg:mr-2">
-                                <Button variant="ghost" size="icon" onClick={(e) => { e.stopPropagation(); setPanelViewMode('list'); }} className={`h-8 w-8 rounded-lg transition-all ${panelViewMode === 'list' ? 'bg-blue-600 text-white' : 'text-white/40 hover:text-white hover:bg-white/5'}`}>
+                                <Button 
+                                  variant="ghost" 
+                                  size="icon" 
+                                  title="List View"
+                                  onClick={(e) => { e.stopPropagation(); setPanelViewMode('list'); }} 
+                                  className={`h-8 w-8 rounded-lg transition-all ${panelViewMode === 'list' ? 'bg-blue-600 text-white' : 'text-white/40 hover:text-white hover:bg-white/5'}`}
+                                >
                                   <List className="w-4 h-4" />
                                 </Button>
-                                <Button variant="ghost" size="icon" onClick={(e) => { e.stopPropagation(); setPanelViewMode('grid-sm'); }} className={`h-8 w-8 rounded-lg transition-all ${panelViewMode === 'grid-sm' ? 'bg-blue-600 text-white' : 'text-white/40 hover:text-white hover:bg-white/5'}`}>
-                                  <Grid className="w-3.5 h-3.5" />
+                                <Button 
+                                  variant="ghost" 
+                                  size="icon" 
+                                  title="Small Tiles Grid"
+                                  onClick={(e) => { e.stopPropagation(); setPanelViewMode('grid-sm'); }} 
+                                  className={`h-8 w-8 rounded-lg transition-all ${panelViewMode === 'grid-sm' ? 'bg-blue-600 text-white' : 'text-white/40 hover:text-white hover:bg-white/5'}`}
+                                >
+                                  <Grid3X3 className="w-4 h-4" />
                                 </Button>
-                                <Button variant="ghost" size="icon" onClick={(e) => { e.stopPropagation(); setPanelViewMode('grid-md'); }} className={`h-8 w-8 rounded-lg transition-all ${panelViewMode === 'grid-md' ? 'bg-blue-600 text-white' : 'text-white/40 hover:text-white hover:bg-white/5'}`}>
-                                  <Grid className="w-4 h-4" />
+                                <Button 
+                                  variant="ghost" 
+                                  size="icon" 
+                                  title="Medium Tiles Grid"
+                                  onClick={(e) => { e.stopPropagation(); setPanelViewMode('grid-md'); }} 
+                                  className={`h-8 w-8 rounded-lg transition-all ${panelViewMode === 'grid-md' ? 'bg-blue-600 text-white' : 'text-white/40 hover:text-white hover:bg-white/5'}`}
+                                >
+                                  <LayoutGrid className="w-4 h-4" />
                                 </Button>
-                                <Button variant="ghost" size="icon" onClick={(e) => { e.stopPropagation(); setPanelViewMode('grid-lg'); }} className={`h-8 w-8 rounded-lg transition-all ${panelViewMode === 'grid-lg' ? 'bg-blue-600 text-white' : 'text-white/40 hover:text-white hover:bg-white/5'}`}>
-                                  <Grid className="w-5 h-5" />
+                                <Button 
+                                  variant="ghost" 
+                                  size="icon" 
+                                  title="Large Panels Grid"
+                                  onClick={(e) => { e.stopPropagation(); setPanelViewMode('grid-lg'); }} 
+                                  className={`h-8 w-8 rounded-lg transition-all ${panelViewMode === 'grid-lg' ? 'bg-blue-600 text-white' : 'text-white/40 hover:text-white hover:bg-white/5'}`}
+                                >
+                                  <Square className="w-4 h-4" />
                                 </Button>
                               </div>
                               <Button 
@@ -2313,6 +2602,42 @@ export default function App() {
 
                         <div className="space-y-3">
                           <div className="flex items-center justify-between">
+                            <label className="text-[10px] font-bold uppercase tracking-[0.2em] text-white/40">Video Ratio / Layout</label>
+                          </div>
+                          <div className="grid grid-cols-2 gap-3">
+                            <button
+                              type="button"
+                              className={`flex flex-col items-center justify-center p-3.5 rounded-xl border text-center transition-all cursor-pointer ${
+                                (project.settings.videoFormat || 'landscape') === 'landscape'
+                                  ? 'bg-blue-600/10 border-blue-500/50 text-white shadow-xl shadow-blue-500/5'
+                                  : 'bg-black/30 border-white/5 text-white/40 hover:text-white/80 hover:bg-white/5'
+                              }`}
+                              onClick={() => setProject(prev => ({ ...prev, settings: { ...prev.settings, videoFormat: 'landscape' } }))}
+                            >
+                              <Video className="w-5 h-5 mb-1.5 text-blue-400" />
+                              <span className="text-xs font-bold leading-none mb-1">Landscape (16:9)</span>
+                              <span className="text-[9px] text-white/35 font-medium">Standard Web & YouTube</span>
+                            </button>
+                            <button
+                              type="button"
+                              className={`flex flex-col items-center justify-center p-3.5 rounded-xl border text-center transition-all cursor-pointer ${
+                                project.settings.videoFormat === 'vertical'
+                                  ? 'bg-blue-600/10 border-blue-500/50 text-white shadow-xl shadow-blue-500/5'
+                                  : 'bg-black/30 border-white/5 text-white/40 hover:text-white/80 hover:bg-white/5'
+                              }`}
+                              onClick={() => setProject(prev => ({ ...prev, settings: { ...prev.settings, videoFormat: 'vertical' } }))}
+                            >
+                              <Smartphone className="w-5 h-5 mb-1.5 text-pink-400" />
+                              <span className="text-xs font-bold leading-none mb-1">Vertical (9:16)</span>
+                              <span className="text-[9px] text-white/35 font-medium">YouTube Shorts & Reels</span>
+                            </button>
+                          </div>
+                        </div>
+
+                        <div className="h-px bg-white/5" />
+
+                        <div className="space-y-3">
+                          <div className="flex items-center justify-between">
                             <label className="text-[10px] font-bold uppercase tracking-[0.2em] text-white/40">Export Resolution</label>
                           </div>
                           <select 
@@ -2394,15 +2719,53 @@ export default function App() {
                   exit={{ opacity: 0, scale: 0.95 }}
                   className="flex flex-col items-center justify-center min-h-[60vh] space-y-8"
                 >
-                  <div className="relative w-full max-w-4xl aspect-video bg-black rounded-3xl overflow-hidden shadow-2xl shadow-blue-500/10 border border-white/10">
+                  <div className={`relative bg-black rounded-3xl overflow-hidden shadow-2xl shadow-blue-500/10 border border-white/10 transition-all duration-300 ${
+                    project.settings.videoFormat === 'vertical'
+                      ? 'aspect-[9/16] h-[650px] md:h-[700px] w-auto'
+                      : 'aspect-video w-full max-w-4xl'
+                  }`}>
                     {currentPanelIndex >= 0 && currentChapter ? (
-                      <motion.img 
-                        key={currentChapter.panels[currentPanelIndex].id}
-                        initial={{ opacity: 0, scale: 1.1 }}
-                        animate={{ opacity: 1, scale: 1 }}
-                        src={currentChapter.panels[currentPanelIndex].imageUrl} 
-                        className="w-full h-full object-contain"
-                      />
+                      <div className="relative w-full h-full overflow-hidden flex items-center justify-center">
+                        {/* Blurred background image - clear, bright, and recognizable visual presentation */}
+                        <img 
+                          src={currentChapter.panels[currentPanelIndex].imageUrl} 
+                          className="absolute inset-0 w-full h-full object-cover blur-[10px] scale-110 opacity-75 select-none pointer-events-none brightness-[0.78]"
+                        />
+                        {/* Crispy centered image with shadow and custom PowerPoint-like enter transition */}
+                        {(() => {
+                          const transitionStyle = ['fade', 'slide-left', 'slide-right', 'zoom-in', 'slide-up', 'zoom-out', 'slide-down'][currentPanelIndex % 7];
+                          let initial = {};
+                          let animate = { opacity: 1, x: 0, y: 0, scale: 1 };
+                          let duration = 0.6;
+
+                          if (transitionStyle === 'fade') {
+                            initial = { opacity: 0 };
+                          } else if (transitionStyle === 'slide-left') {
+                            initial = { opacity: 0, x: 120 };
+                          } else if (transitionStyle === 'slide-right') {
+                            initial = { opacity: 0, x: -120 };
+                          } else if (transitionStyle === 'zoom-in') {
+                            initial = { opacity: 0, scale: 0.85 };
+                          } else if (transitionStyle === 'zoom-out') {
+                            initial = { opacity: 0, scale: 1.15 };
+                          } else if (transitionStyle === 'slide-up') {
+                            initial = { opacity: 0, y: 120 };
+                          } else if (transitionStyle === 'slide-down') {
+                            initial = { opacity: 0, y: -120 };
+                          }
+
+                          return (
+                            <motion.img 
+                              key={currentChapter.panels[currentPanelIndex].id}
+                              initial={initial}
+                              animate={animate}
+                              transition={{ duration, ease: "easeOut" }}
+                              src={currentChapter.panels[currentPanelIndex].imageUrl} 
+                              className="relative z-10 max-h-full max-w-full object-contain shadow-2xl rounded-sm border border-white/5"
+                            />
+                          );
+                        })()}
+                      </div>
                     ) : (
                       <div className="w-full h-full flex items-center justify-center bg-zinc-900/50">
                         <Play className="w-20 h-20 text-white/10" />
@@ -2411,8 +2774,11 @@ export default function App() {
                     
                     {/* Subtitles */}
                     {currentPanelIndex >= 0 && currentChapter && (
-                      <div className="absolute bottom-8 left-0 right-0 px-12 text-center">
-                        <p className="text-xl font-medium bg-black/60 backdrop-blur-md py-3 px-6 rounded-2xl inline-block border border-white/10 text-white">
+                      <div className="absolute bottom-8 left-0 right-0 px-8 md:px-12 text-center pointer-events-none z-20">
+                        <p className={`
+                          font-medium bg-black/75 backdrop-blur-md py-2.5 px-5 rounded-2xl inline-block border border-white/10 text-white text-center shadow-2xl leading-relaxed whitespace-pre-wrap
+                          ${project.settings.videoFormat === 'vertical' ? 'text-xs md:text-sm max-w-[90%]' : 'text-sm md:text-base lg:text-lg max-w-[75%]'}
+                        `}>
                           {currentChapter.panels[currentPanelIndex].script}
                         </p>
                       </div>

@@ -64,5 +64,6 @@ export interface Project {
     exportResolution: '720p' | '1080p' | '4K';
     exportQuality: 'Low' | 'Medium' | 'High';
     scriptLength?: 'Short' | 'Normal' | 'Detailed';
+    videoFormat?: 'landscape' | 'vertical';
   };
 }
