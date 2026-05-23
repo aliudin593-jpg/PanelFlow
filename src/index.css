@@ -49,6 +49,28 @@
 }
 
 :root {
+    --background: oklch(1 0 0);
+    --foreground: oklch(0.12 0.04 250);
+    --card: oklch(0.98 0 0);
+    --card-foreground: oklch(0.12 0.04 250);
+    --popover: oklch(1 0 0);
+    --popover-foreground: oklch(0.12 0.04 250);
+    --primary: oklch(0.6 0.18 250);
+    --primary-foreground: oklch(1 0 0);
+    --secondary: oklch(0.96 0.01 250);
+    --secondary-foreground: oklch(0.2 0.05 250);
+    --muted: oklch(0.96 0.01 250);
+    --muted-foreground: oklch(0.5 0.05 250);
+    --accent: oklch(0.94 0.02 250);
+    --accent-foreground: oklch(0.2 0.05 250);
+    --destructive: oklch(0.55 0.2 25);
+    --border: oklch(0.9 0.02 250);
+    --input: oklch(0.9 0.02 250);
+    --ring: oklch(0.6 0.18 250);
+    --radius: 0.75rem;
+}
+
+.dark {
     --background: oklch(0.12 0.04 250);
     --foreground: oklch(0.98 0.01 250);
     --card: oklch(0.16 0.04 250);
@@ -63,11 +85,10 @@
     --muted-foreground: oklch(0.7 0.04 250);
     --accent: oklch(0.3 0.1 250);
     --accent-foreground: oklch(0.98 0.01 250);
-    --destructive: oklch(0.55 0.2 25);
+    --destructive: oklch(0.45 0.2 25);
     --border: oklch(0.3 0.05 250);
     --input: oklch(0.3 0.05 250);
     --ring: oklch(0.6 0.18 250);
-    --radius: 0.75rem;
 }
 
 @layer base {
@@ -75,7 +96,7 @@
     @apply border-border outline-ring/50;
     }
   body {
-    @apply bg-[#020617] text-foreground antialiased;
+    @apply bg-background text-foreground antialiased transition-colors duration-300;
     }
   html {
     @apply font-sans scroll-smooth;
@@ -89,17 +110,17 @@
     @apply bg-transparent;
   }
   ::-webkit-scrollbar-thumb {
-    @apply bg-white/10 rounded-full hover:bg-white/20 transition-colors;
+    @apply bg-foreground/10 rounded-full hover:bg-foreground/20 transition-colors;
   }
 }
 
 @layer utilities {
   .glass {
-    @apply bg-black/40 backdrop-blur-2xl border border-white/5 shadow-2xl;
+    @apply bg-background/40 backdrop-blur-2xl border border-border/50 shadow-2xl;
   }
   
   .text-gradient {
-    @apply bg-clip-text text-transparent bg-gradient-to-br from-white via-white to-white/40;
+    @apply bg-clip-text text-transparent bg-gradient-to-br from-foreground via-foreground/80 to-foreground/40;
   }
 
   .animate-glow {
@@ -110,10 +131,10 @@
     @apply w-3 h-3;
   }
   .custom-scrollbar-visible::-webkit-scrollbar-track {
-    @apply bg-black/20;
+    @apply bg-foreground/5;
   }
   .custom-scrollbar-visible::-webkit-scrollbar-thumb {
-    @apply bg-blue-600/50 rounded-full border-2 border-transparent bg-clip-padding hover:bg-blue-600 transition-colors;
+    @apply bg-primary/50 rounded-full border-2 border-transparent bg-clip-padding hover:bg-primary transition-colors;
   }
 
   @keyframes glow {

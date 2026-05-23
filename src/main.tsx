@@ -2,6 +2,7 @@ import {StrictMode} from 'react';
 import {createRoot} from 'react-dom/client';
 import App from './App.tsx';
 import './index.css';
+import { ThemeProvider } from '@/components/theme-provider';
 
 // Global error handling to catch "Object" exceptions
 window.addEventListener('error', (event) => {
@@ -18,6 +19,8 @@ window.addEventListener('unhandledrejection', (event) => {
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    <App />
+    <ThemeProvider defaultTheme="system" storageKey="panelflow-ui-theme">
+      <App />
+    </ThemeProvider>
   </StrictMode>,
 );

@@ -5,16 +5,16 @@
 
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { 
-  Upload, 
-  Scissors, 
-  FileText, 
-  Play, 
-  Download, 
-  Plus, 
-  Trash2, 
+import {
+  Upload,
+  Scissors,
+  FileText,
+  Play,
+  Download,
+  Plus,
+  Trash2,
   X,
-  Settings, 
+  Settings,
   ChevronRight,
   ChevronDown,
   Folder as FolderIcon,
@@ -39,7 +39,9 @@ import {
   Sparkles,
   Layers,
   Smartphone,
-  Video
+  Video,
+  FolderDown,
+  FolderUp
 } from 'lucide-react';
 import { useDropzone } from 'react-dropzone';
 import { toast, Toaster } from 'sonner';
@@ -52,6 +54,8 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import { Separator } from '@/components/ui/separator';
 import { Slider } from '@/components/ui/slider';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
+import { ModeToggle } from '@/components/mode-toggle';
+import { UxGuide } from '@/components/ui/ux-guide';
 import { 
   Dialog, 
   DialogContent, 
@@ -64,6 +68,7 @@ import {
 import { Project, Panel, ComicChapter, Title, Category } from './types';
 import { fileToBase64, cropImage } from './services/imageProcessing';
 import { detectPanels, generatePanelScripts, generateSpeech, generateSocialMetadata } from './services/gemini';
+import { saveProjectToDB, loadProjectFromDB, exportProjectAsZip, importProjectFromZip } from './services/storage';
 
 import {
   DndContext,
@@ -139,28 +144,69 @@ export default function App() {
   const [selectedLibraryTitleIds, setSelectedLibraryTitleIds] = useState<Set<string>>(new Set());
   const [selectedLibraryChapterIds, setSelectedLibraryChapterIds] = useState<Set<string>>(new Set());
 
-  // Load draft on mount
+  const importInputRef = useRef<HTMLInputElement>(null);
+
+  // Load draft on mount — IndexedDB, fallback to localStorage for migration
   useEffect(() => {
-    const saved = localStorage.getItem('panelflow_project');
-    if (saved) {
+    (async () => {
       try {
-        setProject(JSON.parse(saved));
-        toast.info('Loaded your last draft');
+        const saved = await loadProjectFromDB();
+        if (saved) {
+          setProject(saved);
+          toast.info('Loaded your last draft');
+          return;
+        }
+        // One-time migration from old localStorage draft
+        const legacy = localStorage.getItem('panelflow_project');
+        if (legacy) {
+          const parsed = JSON.parse(legacy);
+          setProject(parsed);
+          await saveProjectToDB(parsed);
+          localStorage.removeItem('panelflow_project');
+          toast.info('Draft migrated to IndexedDB');
+        }
       } catch (e) {
-        console.error('Failed to load draft');
+        console.error('Failed to load draft', e);
       }
-    }
+    })();
   }, []);
 
-  const saveDraft = () => {
-    localStorage.setItem('panelflow_project', JSON.stringify(project));
-    toast.success('Draft saved successfully!');
-    confetti({
-      particleCount: 100,
-      spread: 70,
-      origin: { y: 0.6 },
-      colors: ['#2563eb', '#ffffff']
-    });
+  const saveDraft = async () => {
+    try {
+      await saveProjectToDB(project);
+      toast.success('Draft saved!');
+      confetti({
+        particleCount: 100,
+        spread: 70,
+        origin: { y: 0.6 },
+        colors: ['#2563eb', '#ffffff']
+      });
+    } catch (e) {
+      toast.error('Failed to save draft');
+    }
+  };
+
+  const handleExportProject = async () => {
+    try {
+      toast.info('Packing project into ZIP...');
+      await exportProjectAsZip(project);
+      toast.success('Project exported as .panelflow file!');
+    } catch (e: any) {
+      toast.error('Export failed: ' + e.message);
+    }
+  };
+
+  const handleImportProject = async (file: File) => {
+    try {
+      toast.info('Importing project...');
+      const imported = await importProjectFromZip(file);
+      setProject(imported);
+      await saveProjectToDB(imported);
+      toast.success(`Project "${imported.name}" imported!`);
+      confetti({ particleCount: 80, spread: 60, origin: { y: 0.6 } });
+    } catch (e: any) {
+      toast.error('Import failed: ' + e.message);
+    }
   };
 
   const sensors = useSensors(
@@ -334,7 +380,7 @@ export default function App() {
         p-3 rounded-xl border transition-all duration-300 cursor-pointer flex items-center justify-between group relative
         ${project.currentChapterId === chapter.id 
           ? 'bg-blue-600/10 border-blue-500/50 shadow-lg shadow-blue-500/5' 
-          : 'bg-white/[0.02] border-white/5 hover:border-white/10 hover:bg-white/[0.04]'}
+          : 'bg-white/[0.02] border-border/50 hover:border-border hover:bg-white/[0.04]'}
         ${selectedLibraryChapterIds.has(chapter.id) ? 'ring-2 ring-red-500 border-red-500' : ''}
       `}
     >
@@ -348,8 +394,8 @@ export default function App() {
           setSelectedLibraryChapterIds(next);
         }}
       >
-        <div className={`w-5 h-5 rounded border flex items-center justify-center transition-colors ${selectedLibraryChapterIds.has(chapter.id) ? 'bg-red-500 border-red-500' : 'border-white/20 bg-black/40 hover:border-white/50'}`}>
-          {selectedLibraryChapterIds.has(chapter.id) && <Check className="w-3 h-3 text-white" />}
+        <div className={`w-5 h-5 rounded border flex items-center justify-center transition-colors ${selectedLibraryChapterIds.has(chapter.id) ? 'bg-red-500 border-red-500' : 'border-border bg-background/40 hover:border-border/500'}`}>
+          {selectedLibraryChapterIds.has(chapter.id) && <Check className="w-3 h-3 text-foreground" />}
         </div>
       </div>
 
@@ -357,14 +403,14 @@ export default function App() {
         className="flex items-center gap-3 overflow-hidden pl-8"
         onClick={() => setProject(prev => ({ ...prev, currentChapterId: chapter.id }))}
       >
-        <div className="w-8 h-8 bg-black rounded-lg flex-shrink-0 overflow-hidden border border-white/10 shadow-inner">
+        <div className="w-8 h-8 bg-background rounded-lg flex-shrink-0 overflow-hidden border border-border shadow-inner">
           {chapter.pages[0] && <img src={chapter.pages[0]} className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-110" />}
         </div>
         <div className="flex flex-col min-w-0">
-          <span className={`text-[11px] font-bold truncate transition-colors ${project.currentChapterId === chapter.id ? 'text-blue-400' : 'text-white/80'}`}>
+          <span className={`text-[11px] font-bold truncate transition-colors ${project.currentChapterId === chapter.id ? 'text-blue-400' : 'text-foreground/80'}`}>
             {chapter.name}
           </span>
-          <span className="text-[9px] font-mono text-white/20 uppercase tracking-widest">
+          <span className="text-[9px] font-mono text-foreground/20 uppercase tracking-widest">
             {chapter.panels.length} Panels
           </span>
         </div>
@@ -380,7 +426,7 @@ export default function App() {
                 processChapter(chapter, 'auto');
               }}
               disabled={isProcessing}
-              className="h-7 px-3 bg-blue-600/20 text-blue-400 hover:text-white hover:bg-blue-600 rounded-full text-[9px] font-bold uppercase tracking-widest mr-2"
+              className="h-7 px-3 bg-blue-600/20 text-blue-400 hover:text-foreground hover:bg-blue-600 rounded-full text-[9px] font-bold uppercase tracking-widest mr-2"
             >
               Auto Snap
             </Button>
@@ -392,7 +438,7 @@ export default function App() {
                 processChapter(chapter, 'manual');
               }}
               disabled={isProcessing}
-              className="h-7 px-3 bg-white/5 text-white/60 hover:text-white hover:bg-white/20 rounded-full text-[9px] font-bold uppercase tracking-widest mr-2"
+              className="h-7 px-3 bg-foreground/5 text-foreground/60 hover:text-foreground hover:bg-foreground/20 rounded-full text-[9px] font-bold uppercase tracking-widest mr-2"
             >
               Manual Snap
             </Button>
@@ -406,7 +452,7 @@ export default function App() {
               setProject(prev => ({ ...prev, currentChapterId: chapter.id }));
               setActiveTab('edit');
             }}
-            className="h-7 px-3 bg-white/5 text-white/80 hover:text-black hover:bg-white rounded-full text-[9px] font-bold uppercase tracking-widest mr-2"
+            className="h-7 px-3 bg-foreground/5 text-foreground/80 hover:text-black hover:bg-white rounded-full text-[9px] font-bold uppercase tracking-widest mr-2"
           >
             Open
           </Button>
@@ -414,7 +460,7 @@ export default function App() {
         <Button 
           variant="ghost" 
           size="icon" 
-          className="h-7 w-7 text-white/20 hover:text-blue-400 hover:bg-blue-400/10 rounded-full"
+          className="h-7 w-7 text-foreground/20 hover:text-blue-400 hover:bg-blue-400/10 rounded-full"
           onClick={(e) => {
             e.stopPropagation();
             setChapterToRename(chapter);
@@ -427,7 +473,7 @@ export default function App() {
         <Button 
           variant="ghost" 
           size="icon" 
-          className="h-7 w-7 text-white/20 hover:text-red-400 hover:bg-red-400/10 rounded-full"
+          className="h-7 w-7 text-foreground/20 hover:text-red-400 hover:bg-red-400/10 rounded-full"
           onClick={(e) => {
             e.stopPropagation();
             setChapterToDelete(chapter);
@@ -439,6 +485,14 @@ export default function App() {
       </div>
     </div>
   );
+
+  // Auto-save to IndexedDB with 2s debounce whenever project changes
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      saveProjectToDB(project).catch(console.error);
+    }, 2000);
+    return () => clearTimeout(timer);
+  }, [project]);
 
   // Load voices (now using Gemini TTS voices)
   useEffect(() => {
@@ -1339,63 +1393,94 @@ export default function App() {
 
   return (
     <TooltipProvider>
-      <div className="min-h-screen bg-gradient-to-br from-[#0B1021] via-[#1B143F] to-[#0B1B2E] text-white font-sans selection:bg-blue-500/30">
+      <div className="min-h-screen bg-background text-foreground font-sans selection:bg-primary/30 transition-colors duration-300">
         <Toaster position="top-center" theme="dark" />
         
         {isProcessing && exportProgress > 0 && (
-          <div className="fixed inset-0 z-[100] bg-black/80 backdrop-blur-sm flex items-center justify-center p-6">
+          <div className="fixed inset-0 z-[100] bg-background/80 backdrop-blur-sm flex items-center justify-center p-6">
             <div className="max-w-md w-full space-y-4">
               <div className="flex justify-between text-sm font-bold uppercase tracking-wider">
                 <span>Compiling Video...</span>
                 <span>{exportProgress}%</span>
               </div>
-              <div className="h-3 bg-white/10 rounded-full overflow-hidden border border-white/10">
+              <div className="h-3 bg-foreground/10 rounded-full overflow-hidden border border-border">
                 <motion.div 
                   className="h-full bg-blue-600"
                   initial={{ width: 0 }}
                   animate={{ width: `${exportProgress}%` }}
                 />
               </div>
-              <p className="text-center text-xs text-white/60">Please keep this tab open until the download starts.</p>
+              <p className="text-center text-xs text-foreground/60">Please keep this tab open until the download starts.</p>
             </div>
           </div>
         )}
         
         {/* Navbar */}
-        <nav className="border-b border-blue-500/10 bg-[#0B1021]/60 backdrop-blur-2xl sticky top-0 z-50 shadow-lg shadow-purple-900/10">
+        <nav className="border-b border-blue-500/10 bg-background/60 backdrop-blur-2xl sticky top-0 z-50 shadow-lg shadow-primary/10 border-b border-border/50">
           <div className="max-w-7xl mx-auto px-6 h-20 flex items-center justify-between">
             <div className="flex items-center gap-4">
               <div className="w-12 h-12 bg-blue-600 rounded-2xl flex items-center justify-center shadow-2xl shadow-blue-500/40 transform transition-transform hover:rotate-12">
-                <Sparkles className="text-white w-7 h-7" />
+                <img src="/logo.png" className="w-8 h-8 object-contain" alt="PanelFlow Logo" />
               </div>
               <div>
-                <h1 className="font-black text-2xl tracking-tighter text-white">PanelFlow <span className="text-blue-500">AI</span></h1>
+                <h1 className="font-black text-2xl tracking-tighter text-foreground">PanelFlow <span className="text-primary">AI</span></h1>
                 <div className="flex items-center gap-2">
                   <span className="text-[9px] font-mono font-bold uppercase tracking-[0.3em] text-blue-400/60">Comic to Video Engine</span>
-                  <div className="h-px w-4 bg-white/10" />
-                  <span className="text-[9px] font-mono text-white/20 uppercase tracking-widest">v2.4.0</span>
+                  <div className="h-px w-4 bg-foreground/10" />
+                  <span className="text-[9px] font-mono text-foreground/20 uppercase tracking-widest">v2.4.0</span>
                 </div>
               </div>
             </div>
 
+            {/* Hidden file input for project import */}
+            <input
+              ref={importInputRef}
+              type="file"
+              accept=".panelflow"
+              className="hidden"
+              onChange={(e) => {
+                const file = e.target.files?.[0];
+                if (file) handleImportProject(file);
+                e.target.value = '';
+              }}
+            />
+
             <div className="flex items-center gap-6">
-              <div className="hidden md:flex items-center gap-3 px-4 py-2 bg-white/[0.03] rounded-2xl border border-white/5 group hover:border-blue-500/30 transition-all">
+              <div className="hidden md:flex items-center gap-3 px-4 py-2 bg-white/[0.03] rounded-2xl border border-border/50 group hover:border-blue-500/30 transition-all">
                 <div className="w-2 h-2 bg-green-500 rounded-full shadow-[0_0_10px_rgba(34,197,94,0.5)]" />
-                <input 
+                <input
                   value={project.name}
                   onChange={(e) => setProject(prev => ({ ...prev, name: e.target.value }))}
-                  className="bg-transparent border-none text-xs font-bold text-white/60 focus:text-white outline-none w-40 transition-colors"
+                  className="bg-transparent border-none text-xs font-bold text-foreground/60 focus:text-foreground outline-none w-40 transition-colors"
                   placeholder="Untitled Project"
                 />
               </div>
               <div className="flex items-center gap-2">
-                <Button variant="ghost" size="icon" className="text-white/40 hover:text-white hover:bg-white/5 rounded-full">
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  title="Import Project (.panelflow)"
+                  className="text-foreground/40 hover:text-emerald-400 hover:bg-emerald-400/10 rounded-full"
+                  onClick={() => importInputRef.current?.click()}
+                >
+                  <FolderUp className="w-5 h-5" />
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  title="Export Project (.panelflow)"
+                  className="text-foreground/40 hover:text-blue-400 hover:bg-blue-400/10 rounded-full"
+                  onClick={handleExportProject}
+                >
+                  <FolderDown className="w-5 h-5" />
+                </Button>
+                <Button variant="ghost" size="icon" className="text-foreground/40 hover:text-foreground hover:bg-foreground/5 rounded-full">
                   <Settings className="w-5 h-5" />
                 </Button>
-                <Button 
+                <Button
                   onClick={handleExportVideo}
                   disabled={isProcessing || !currentChapter || currentChapter.panels.some(p => !p.script.trim())}
-                  className="bg-blue-600 hover:bg-blue-700 text-white font-bold px-8 h-11 rounded-2xl shadow-xl shadow-blue-500/20 transition-all hover:scale-[1.02] active:scale-[0.98]"
+                  className="bg-blue-600 hover:bg-blue-700 text-foreground font-bold px-8 h-11 rounded-2xl shadow-xl shadow-blue-500/20 transition-all hover:scale-[1.02] active:scale-[0.98]"
                 >
                   {isProcessing ? (
                     <div className="flex items-center gap-2">
@@ -1413,24 +1498,24 @@ export default function App() {
           <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-8">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-4">
-                <TabsList className="bg-white/[0.03] border border-white/5 p-1.5 h-14 rounded-2xl">
+                <TabsList className="bg-white/[0.03] border border-border/50 p-1.5 h-14 rounded-2xl">
                   <TabsTrigger 
                     value="library" 
-                    className="data-[state=active]:bg-blue-600 data-[state=active]:text-white data-[state=active]:shadow-lg data-[state=active]:shadow-blue-500/20 px-8 rounded-xl gap-2.5 text-white/40 font-bold text-xs uppercase tracking-widest transition-all"
+                    className="data-[state=active]:bg-blue-600 data-[state=active]:text-foreground data-[state=active]:shadow-lg data-[state=active]:shadow-blue-500/20 px-8 rounded-xl gap-2.5 text-foreground/40 font-bold text-xs uppercase tracking-widest transition-all"
                   >
                     <Library className="w-4 h-4" />
                     Library
                   </TabsTrigger>
                   <TabsTrigger 
                     value="edit" 
-                    className="data-[state=active]:bg-blue-600 data-[state=active]:text-white data-[state=active]:shadow-lg data-[state=active]:shadow-blue-500/20 px-8 rounded-xl gap-2.5 text-white/40 font-bold text-xs uppercase tracking-widest transition-all"
+                    className="data-[state=active]:bg-blue-600 data-[state=active]:text-foreground data-[state=active]:shadow-lg data-[state=active]:shadow-blue-500/20 px-8 rounded-xl gap-2.5 text-foreground/40 font-bold text-xs uppercase tracking-widest transition-all"
                   >
                     <Layout className="w-4 h-4" />
                     Edit
                   </TabsTrigger>
                   <TabsTrigger 
                     value="exposure" 
-                    className="data-[state=active]:bg-fuchsia-600 data-[state=active]:text-white data-[state=active]:shadow-lg data-[state=active]:shadow-fuchsia-500/20 px-8 rounded-xl gap-2.5 text-white/40 font-bold text-xs uppercase tracking-widest transition-all"
+                    className="data-[state=active]:bg-fuchsia-600 data-[state=active]:text-foreground data-[state=active]:shadow-lg data-[state=active]:shadow-fuchsia-500/20 px-8 rounded-xl gap-2.5 text-foreground/40 font-bold text-xs uppercase tracking-widest transition-all"
                   >
                     <Sparkles className="w-4 h-4" />
                     Videos
@@ -1442,7 +1527,7 @@ export default function App() {
                     <Button 
                       variant="outline" 
                       size="sm" 
-                      className="border-white/10 bg-white/5 text-white/60 hover:text-white hover:bg-white/10 rounded-xl h-10 px-4 text-xs font-bold uppercase tracking-wider"
+                      className="border-border bg-foreground/5 text-foreground/60 hover:text-foreground hover:bg-foreground/10 rounded-xl h-10 px-4 text-xs font-bold uppercase tracking-wider"
                       onClick={() => {
                         if (selectedPanelIds.size === currentChapter.panels.length) {
                           setSelectedPanelIds(new Set());
@@ -1493,7 +1578,7 @@ export default function App() {
                         <select 
                           value={project.settings.scriptLength || 'Normal'}
                           onChange={(e) => setProject(prev => ({ ...prev, settings: { ...prev.settings, scriptLength: e.target.value as any } }))}
-                          className="h-10 bg-black/40 border border-white/10 rounded-xl px-4 text-xs font-bold outline-none focus:ring-2 focus:ring-blue-500/50 appearance-none text-white/80 cursor-pointer text-center"
+                          className="h-10 bg-background/40 border border-border rounded-xl px-4 text-xs font-bold outline-none focus:ring-2 focus:ring-blue-500/50 appearance-none text-foreground/80 cursor-pointer text-center"
                           title="Script Length"
                         >
                           <option value="Short">Short (1 Sent.)</option>
@@ -1503,7 +1588,7 @@ export default function App() {
                         <Button 
                           onClick={handleBulkScript} 
                           disabled={isProcessing}
-                          className="bg-blue-600 text-white hover:bg-blue-700 gap-2.5 h-10 px-6 rounded-xl shadow-lg shadow-blue-500/20 font-bold text-xs uppercase tracking-wider"
+                          className="bg-blue-600 text-foreground hover:bg-blue-700 gap-2.5 h-10 px-6 rounded-xl shadow-lg shadow-blue-500/20 font-bold text-xs uppercase tracking-wider"
                         >
                           {isProcessing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Scissors className="w-4 h-4" />}
                           Generate {selectedPanelIds.size} Scripts
@@ -1519,7 +1604,7 @@ export default function App() {
                   <select 
                     value={project.settings.scriptLength || 'Normal'}
                     onChange={(e) => setProject(prev => ({ ...prev, settings: { ...prev.settings, scriptLength: e.target.value as any } }))}
-                    className="h-12 bg-black/40 border border-white/10 rounded-2xl px-4 text-xs font-bold outline-none focus:ring-2 focus:ring-blue-500/50 appearance-none text-white/80 cursor-pointer text-center"
+                    className="h-12 bg-background/40 border border-border rounded-2xl px-4 text-xs font-bold outline-none focus:ring-2 focus:ring-blue-500/50 appearance-none text-foreground/80 cursor-pointer text-center"
                   >
                     <option value="Short">Short Script (1 Sentence)</option>
                     <option value="Normal">Normal Script (1-3 Sentences)</option>
@@ -1551,22 +1636,22 @@ export default function App() {
                       {...getRootProps()} 
                       className={`
                         border-2 border-dashed rounded-[2.5rem] p-12 flex flex-col items-center justify-center transition-all duration-700 relative overflow-hidden group
-                        ${isDragActive ? 'border-blue-600 bg-blue-600/5 scale-[0.98]' : 'border-white/5 bg-white/[0.02] hover:border-blue-500/20 hover:bg-white/[0.04]'}
+                        ${isDragActive ? 'border-blue-600 bg-blue-600/5 scale-[0.98]' : 'border-border/50 bg-white/[0.02] hover:border-blue-500/20 hover:bg-white/[0.04]'}
                       `}
                     >
                       <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[500px] h-[500px] bg-blue-600/5 blur-[120px] rounded-full opacity-0 group-hover:opacity-100 transition-opacity duration-1000" />
                       <input {...getInputProps()} />
                       <div className="flex items-center gap-6 relative z-10 w-full max-w-2xl mx-auto">
                         <div className={`
-                          w-20 h-20 bg-white/[0.03] rounded-3xl flex items-center justify-center border border-white/5 transition-all duration-500 flex-shrink-0
+                          w-20 h-20 bg-white/[0.03] rounded-3xl flex items-center justify-center border border-border/50 transition-all duration-500 flex-shrink-0
                           group-hover:scale-110 group-hover:rotate-6 group-hover:bg-blue-600 group-hover:border-blue-400/50 group-hover:shadow-2xl group-hover:shadow-blue-500/40
                         `}>
-                          <Upload className={`w-8 h-8 transition-colors duration-500 ${isDragActive ? 'text-white' : 'text-white/40 group-hover:text-white'}`} />
+                          <Upload className={`w-8 h-8 transition-colors duration-500 ${isDragActive ? 'text-foreground' : 'text-foreground/40 group-hover:text-foreground'}`} />
                         </div>
                         <div className="flex-1 text-left">
-                          <h3 className="text-2xl font-black mb-1 text-white tracking-tight">Quick Import</h3>
-                          <p className="text-white/40 text-sm font-medium">
-                            Drag & Drop pages (<span className="text-white/60">PDF, images</span>) anywhere in this box. We'll handle the rest!
+                          <h3 className="text-2xl font-black mb-1 text-foreground tracking-tight">Quick Import</h3>
+                          <p className="text-foreground/40 text-sm font-medium">
+                            Drag & Drop pages (<span className="text-foreground/60">PDF, images</span>) anywhere in this box. We'll handle the rest!
                           </p>
                         </div>
                         <div className="flex-shrink-0">
@@ -1590,8 +1675,8 @@ export default function App() {
                         className={`
                           h-24 rounded-3xl border-2 transition-all flex flex-col gap-2
                           ${currentCategoryId === cat.id 
-                            ? 'bg-blue-600 border-blue-400 text-white shadow-xl shadow-blue-500/20' 
-                            : 'bg-[#1B143F]/40 border-purple-500/10 text-white/40 hover:bg-[#1B143F]/60 hover:border-blue-500/30 shadow-lg shadow-purple-900/10'}
+                            ? 'bg-blue-600 border-blue-400 text-foreground shadow-xl shadow-blue-500/20' 
+                            : 'bg-background/40 border-purple-500/10 text-foreground/40 hover:bg-background/60 hover:border-blue-500/30 shadow-lg shadow-purple-900/10'}
                         `}
                       >
                         <span className="text-xl font-black uppercase tracking-tighter">{cat.name}</span>
@@ -1613,32 +1698,32 @@ export default function App() {
                               setCurrentCategoryId(null);
                               setCurrentTitleId(null);
                             }}
-                            className="text-white/40 hover:text-white hover:bg-white/5 rounded-full"
+                            className="text-foreground/40 hover:text-foreground hover:bg-foreground/5 rounded-full"
                           >
                             <ChevronLeft className="w-6 h-6" />
                           </Button>
-                          <h3 className="text-2xl font-black text-white uppercase tracking-tight">
+                          <h3 className="text-2xl font-black text-foreground uppercase tracking-tight">
                             {project.categories.find(c => c.id === currentCategoryId)?.name} Titles
                           </h3>
                         </div>
                         <div className="flex items-center gap-4">
-                          <div className="flex items-center bg-white/5 p-1 rounded-xl border border-white/5 hidden md:flex">
-                            <Button variant="ghost" size="icon" title="List View" onClick={() => setTitleViewMode('list')} className={`h-8 w-8 rounded-lg transition-all ${titleViewMode === 'list' ? 'bg-blue-600 text-white shadow-lg shadow-blue-500/20' : 'text-white/40 hover:text-white hover:bg-white/5'}`}>
+                          <div className="flex items-center bg-foreground/5 p-1 rounded-xl border border-border/50 hidden md:flex">
+                            <Button variant="ghost" size="icon" title="List View" onClick={() => setTitleViewMode('list')} className={`h-8 w-8 rounded-lg transition-all ${titleViewMode === 'list' ? 'bg-blue-600 text-foreground shadow-lg shadow-blue-500/20' : 'text-foreground/40 hover:text-foreground hover:bg-foreground/5'}`}>
                               <List className="w-4 h-4" />
                             </Button>
-                            <Button variant="ghost" size="icon" title="Small Tiles Grid" onClick={() => setTitleViewMode('grid-sm')} className={`h-8 w-8 rounded-lg transition-all ${titleViewMode === 'grid-sm' ? 'bg-blue-600 text-white shadow-lg shadow-blue-500/20' : 'text-white/40 hover:text-white hover:bg-white/5'}`}>
+                            <Button variant="ghost" size="icon" title="Small Tiles Grid" onClick={() => setTitleViewMode('grid-sm')} className={`h-8 w-8 rounded-lg transition-all ${titleViewMode === 'grid-sm' ? 'bg-blue-600 text-foreground shadow-lg shadow-blue-500/20' : 'text-foreground/40 hover:text-foreground hover:bg-foreground/5'}`}>
                               <Grid3X3 className="w-4 h-4" />
                             </Button>
-                            <Button variant="ghost" size="icon" title="Medium Tiles Grid" onClick={() => setTitleViewMode('grid-md')} className={`h-8 w-8 rounded-lg transition-all ${titleViewMode === 'grid-md' ? 'bg-blue-600 text-white shadow-lg shadow-blue-500/20' : 'text-white/40 hover:text-white hover:bg-white/5'}`}>
+                            <Button variant="ghost" size="icon" title="Medium Tiles Grid" onClick={() => setTitleViewMode('grid-md')} className={`h-8 w-8 rounded-lg transition-all ${titleViewMode === 'grid-md' ? 'bg-blue-600 text-foreground shadow-lg shadow-blue-500/20' : 'text-foreground/40 hover:text-foreground hover:bg-foreground/5'}`}>
                               <LayoutGrid className="w-4 h-4" />
                             </Button>
-                            <Button variant="ghost" size="icon" title="Large Panels Grid" onClick={() => setTitleViewMode('grid-lg')} className={`h-8 w-8 rounded-lg transition-all ${titleViewMode === 'grid-lg' ? 'bg-blue-600 text-white shadow-lg shadow-blue-500/20' : 'text-white/40 hover:text-white hover:bg-white/5'}`}>
+                            <Button variant="ghost" size="icon" title="Large Panels Grid" onClick={() => setTitleViewMode('grid-lg')} className={`h-8 w-8 rounded-lg transition-all ${titleViewMode === 'grid-lg' ? 'bg-blue-600 text-foreground shadow-lg shadow-blue-500/20' : 'text-foreground/40 hover:text-foreground hover:bg-foreground/5'}`}>
                               <Square className="w-4 h-4" />
                             </Button>
                           </div>
                           <Button 
                             onClick={() => setIsAddTitleDialogOpen(true)}
-                            className="bg-white/5 hover:bg-white/10 text-white border border-white/10 rounded-xl h-10 px-4"
+                            className="bg-foreground/5 hover:bg-foreground/10 text-foreground border border-border rounded-xl h-10 px-4"
                           >
                             <Plus className="w-4 h-4 mr-2" /> Add Title
                           </Button>
@@ -1656,8 +1741,8 @@ export default function App() {
                           <Card 
                             key={title.id}
                             className={`
-                              bg-[#1B143F]/40 border-purple-500/10 overflow-hidden transition-all group shadow-lg shadow-purple-900/10 relative cursor-pointer
-                              ${currentTitleId === title.id ? 'ring-2 ring-blue-600 border-blue-600' : 'hover:bg-[#1B143F]/60 hover:border-blue-500/30'}
+                              bg-background/40 border-purple-500/10 overflow-hidden transition-all group shadow-lg shadow-purple-900/10 relative cursor-pointer
+                              ${currentTitleId === title.id ? 'ring-2 ring-blue-600 border-blue-600' : 'hover:bg-background/60 hover:border-blue-500/30'}
                               ${selectedLibraryTitleIds.has(title.id) ? 'ring-2 ring-red-500 border-red-500' : ''}
                             `}
                           >
@@ -1672,23 +1757,23 @@ export default function App() {
                                 setSelectedLibraryTitleIds(next);
                               }}
                             >
-                              <div className={`w-6 h-6 rounded-lg border-2 flex items-center justify-center transition-colors ${selectedLibraryTitleIds.has(title.id) ? 'bg-red-500 border-red-500' : 'border-white/20 bg-black/40 hover:border-white/50'}`}>
-                                {selectedLibraryTitleIds.has(title.id) && <Check className="w-4 h-4 text-white" />}
+                              <div className={`w-6 h-6 rounded-lg border-2 flex items-center justify-center transition-colors ${selectedLibraryTitleIds.has(title.id) ? 'bg-red-500 border-red-500' : 'border-border bg-background/40 hover:border-border/500'}`}>
+                                {selectedLibraryTitleIds.has(title.id) && <Check className="w-4 h-4 text-foreground" />}
                               </div>
                             </div>
                             
-                            <div className="aspect-[3/4] bg-black relative" onClick={() => setCurrentTitleId(title.id)}>
+                            <div className="aspect-[3/4] bg-background relative" onClick={() => setCurrentTitleId(title.id)}>
                               {title.coverUrl ? (
                                 <img src={title.coverUrl} className="w-full h-full object-cover" />
                               ) : (
-                                <div className="absolute inset-0 flex items-center justify-center text-white/10">
+                                <div className="absolute inset-0 flex items-center justify-center text-foreground/10">
                                   <ImageIcon className="w-12 h-12" />
                                 </div>
                               )}
                               <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-transparent" />
                               <div className="absolute bottom-4 left-4 right-4">
-                                <h4 className="font-black text-white truncate uppercase tracking-tight">{title.name}</h4>
-                                <p className="text-[10px] font-bold text-white/40 uppercase tracking-widest">
+                                <h4 className="font-black text-foreground truncate uppercase tracking-tight">{title.name}</h4>
+                                <p className="text-[10px] font-bold text-foreground/40 uppercase tracking-widest">
                                   {project.chapters.filter(c => c.titleId === title.id).length} Chapters
                                 </p>
                               </div>
@@ -1707,21 +1792,21 @@ export default function App() {
                             variant="ghost" 
                             size="icon" 
                             onClick={() => setCurrentTitleId(null)}
-                            className="text-white/40 hover:text-white hover:bg-white/5 rounded-full"
+                            className="text-foreground/40 hover:text-foreground hover:bg-foreground/5 rounded-full"
                           >
                             <ChevronLeft className="w-6 h-6" />
                           </Button>
-                          <h3 className="text-2xl font-black text-white uppercase tracking-tight">
+                          <h3 className="text-2xl font-black text-foreground uppercase tracking-tight">
                             {project.titles.find(t => t.id === currentTitleId)?.name} Chapters
                           </h3>
                         </div>
                         <div className="flex items-center gap-4">
-                          <div className="flex items-center bg-white/5 p-1 rounded-xl border border-white/5">
+                          <div className="flex items-center bg-foreground/5 p-1 rounded-xl border border-border/50">
                             <Button 
                               variant="ghost" 
                               size="icon" 
                               onClick={() => setChapterViewMode('list')}
-                              className={`h-8 w-8 rounded-lg transition-all ${chapterViewMode === 'list' ? 'bg-blue-600 text-white shadow-lg shadow-blue-500/20' : 'text-white/40 hover:text-white hover:bg-white/5'}`}
+                              className={`h-8 w-8 rounded-lg transition-all ${chapterViewMode === 'list' ? 'bg-blue-600 text-foreground shadow-lg shadow-blue-500/20' : 'text-foreground/40 hover:text-foreground hover:bg-foreground/5'}`}
                             >
                               <List className="w-4 h-4" />
                             </Button>
@@ -1730,7 +1815,7 @@ export default function App() {
                               size="icon" 
                               title="Small Tiles Grid"
                               onClick={() => setChapterViewMode('grid-sm')}
-                              className={`h-8 w-8 rounded-lg transition-all ${chapterViewMode === 'grid-sm' ? 'bg-blue-600 text-white shadow-lg shadow-blue-500/20' : 'text-white/40 hover:text-white hover:bg-white/5'}`}
+                              className={`h-8 w-8 rounded-lg transition-all ${chapterViewMode === 'grid-sm' ? 'bg-blue-600 text-foreground shadow-lg shadow-blue-500/20' : 'text-foreground/40 hover:text-foreground hover:bg-foreground/5'}`}
                             >
                               <Grid3X3 className="w-4 h-4" />
                             </Button>
@@ -1739,7 +1824,7 @@ export default function App() {
                               size="icon" 
                               title="Medium Tiles Grid"
                               onClick={() => setChapterViewMode('grid-md')}
-                              className={`h-8 w-8 rounded-lg transition-all ${chapterViewMode === 'grid-md' ? 'bg-blue-600 text-white shadow-lg shadow-blue-500/20' : 'text-white/40 hover:text-white hover:bg-white/5'}`}
+                              className={`h-8 w-8 rounded-lg transition-all ${chapterViewMode === 'grid-md' ? 'bg-blue-600 text-foreground shadow-lg shadow-blue-500/20' : 'text-foreground/40 hover:text-foreground hover:bg-foreground/5'}`}
                             >
                               <LayoutGrid className="w-4 h-4" />
                             </Button>
@@ -1748,7 +1833,7 @@ export default function App() {
                               size="icon" 
                               title="Large Panels Grid"
                               onClick={() => setChapterViewMode('grid-lg')}
-                              className={`h-8 w-8 rounded-lg transition-all ${chapterViewMode === 'grid-lg' ? 'bg-blue-600 text-white shadow-lg shadow-blue-500/20' : 'text-white/40 hover:text-white hover:bg-white/5'}`}
+                              className={`h-8 w-8 rounded-lg transition-all ${chapterViewMode === 'grid-lg' ? 'bg-blue-600 text-foreground shadow-lg shadow-blue-500/20' : 'text-foreground/40 hover:text-foreground hover:bg-foreground/5'}`}
                             >
                               <Square className="w-4 h-4" />
                             </Button>
@@ -1783,8 +1868,8 @@ export default function App() {
                             <Card 
                               key={chapter.id}
                               className={`
-                                bg-[#1B143F]/40 border-purple-500/10 overflow-hidden group transition-all shadow-lg shadow-purple-900/10 relative cursor-pointer
-                                ${project.currentChapterId === chapter.id ? 'ring-2 ring-blue-600 border-blue-600' : 'hover:bg-[#1B143F]/60'}
+                                bg-background/40 border-purple-500/10 overflow-hidden group transition-all shadow-lg shadow-purple-900/10 relative cursor-pointer
+                                ${project.currentChapterId === chapter.id ? 'ring-2 ring-blue-600 border-blue-600' : 'hover:bg-background/60'}
                                 ${selectedLibraryChapterIds.has(chapter.id) ? 'ring-2 ring-red-500 border-red-500' : ''}
                               `}
                             >
@@ -1799,8 +1884,8 @@ export default function App() {
                                   setSelectedLibraryChapterIds(next);
                                 }}
                               >
-                                <div className={`w-6 h-6 rounded-lg border-2 flex items-center justify-center transition-colors ${selectedLibraryChapterIds.has(chapter.id) ? 'bg-red-500 border-red-500' : 'border-white/20 bg-black/40 hover:border-white/50'}`}>
-                                  {selectedLibraryChapterIds.has(chapter.id) && <Check className="w-4 h-4 text-white" />}
+                                <div className={`w-6 h-6 rounded-lg border-2 flex items-center justify-center transition-colors ${selectedLibraryChapterIds.has(chapter.id) ? 'bg-red-500 border-red-500' : 'border-border bg-background/40 hover:border-border/500'}`}>
+                                  {selectedLibraryChapterIds.has(chapter.id) && <Check className="w-4 h-4 text-foreground" />}
                                 </div>
                               </div>
 
@@ -1810,11 +1895,11 @@ export default function App() {
                                   setActiveTab('edit');
                                 }}
                                 className={`
-                                bg-black relative
+                                bg-background relative
                                 ${chapterViewMode === 'grid-sm' ? 'aspect-square' : 'aspect-video'}
                               `}>
                                 {chapter.pages[0] && <img src={chapter.pages[0]} className="w-full h-full object-contain" />}
-                                <div className="absolute inset-0 bg-black/40 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity gap-2">
+                                <div className="absolute inset-0 bg-background/40 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity gap-2">
                                   {chapter.panels.length === 0 ? (
                                     <>
                                       <Button 
@@ -1823,7 +1908,7 @@ export default function App() {
                                           processChapter(chapter, 'auto');
                                         }}
                                         disabled={isProcessing}
-                                        className="bg-blue-600 hover:bg-blue-700 text-white font-black text-[10px] uppercase tracking-widest rounded-xl h-8 px-4"
+                                        className="bg-blue-600 hover:bg-blue-700 text-foreground font-black text-[10px] uppercase tracking-widest rounded-xl h-8 px-4"
                                       >
                                         Auto Snap
                                       </Button>
@@ -1834,7 +1919,7 @@ export default function App() {
                                           e.stopPropagation();
                                           processChapter(chapter, 'manual');
                                         }}
-                                        className="bg-white/10 border-white/10 text-white hover:bg-white/20 h-8 w-8 rounded-xl"
+                                        className="bg-foreground/10 border-border text-foreground hover:bg-foreground/20 h-8 w-8 rounded-xl"
                                       >
                                         <Plus className="w-3.5 h-3.5" />
                                       </Button>
@@ -1859,7 +1944,7 @@ export default function App() {
                                       setNewChapterName(chapter.name);
                                       setIsRenameChapterDialogOpen(true);
                                     }}
-                                    className="bg-white/10 border-white/10 text-white hover:bg-white/20 h-8 w-8 rounded-xl"
+                                    className="bg-foreground/10 border-border text-foreground hover:bg-foreground/20 h-8 w-8 rounded-xl"
                                   >
                                     <Edit className="w-3.5 h-3.5" />
                                   </Button>
@@ -1877,8 +1962,8 @@ export default function App() {
                                 </div>
                               </div>
                               <CardContent className="p-4">
-                                <h4 className={`font-bold text-white truncate ${chapterViewMode === 'grid-sm' ? 'text-xs' : 'text-sm'}`}>{chapter.name}</h4>
-                                <p className="text-[9px] font-bold text-white/40 uppercase tracking-widest mt-1">
+                                <h4 className={`font-bold text-foreground truncate ${chapterViewMode === 'grid-sm' ? 'text-xs' : 'text-sm'}`}>{chapter.name}</h4>
+                                <p className="text-[9px] font-bold text-foreground/40 uppercase tracking-widest mt-1">
                                   {chapter.panels.length} Panels • {new Date(chapter.createdAt).toLocaleDateString()}
                                 </p>
                               </CardContent>
@@ -1903,17 +1988,17 @@ export default function App() {
                   {/* Panel List */}
                   <div className="col-span-9 space-y-6">
                     {!currentChapter ? (
-                      <div className="flex flex-col items-center justify-center p-32 border-2 border-dashed border-white/5 rounded-[2.5rem] bg-white/[0.02]">
-                        <div className="w-24 h-24 bg-white/[0.03] rounded-3xl flex items-center justify-center mb-8 border border-white/5">
-                          <Layers className="w-10 h-10 text-white/40" />
+                      <div className="flex flex-col items-center justify-center p-32 border-2 border-dashed border-border/50 rounded-[2.5rem] bg-white/[0.02]">
+                        <div className="w-24 h-24 bg-white/[0.03] rounded-3xl flex items-center justify-center mb-8 border border-border/50">
+                          <Layers className="w-10 h-10 text-foreground/40" />
                         </div>
-                        <h3 className="text-3xl font-black mb-3 text-white tracking-tight">No Chapter Selected</h3>
-                        <p className="text-white/40 text-center max-w-sm mb-10 text-sm leading-relaxed font-medium">
+                        <h3 className="text-3xl font-black mb-3 text-foreground tracking-tight">No Chapter Selected</h3>
+                        <p className="text-foreground/40 text-center max-w-sm mb-10 text-sm leading-relaxed font-medium">
                           Select a chapter from the Library to start editing its panels, adding scripts, and generating audio.
                         </p>
                         <Button 
                           onClick={() => setActiveTab('library')}
-                          className="bg-blue-600 hover:bg-blue-700 text-white px-10 h-14 rounded-2xl font-black text-xs uppercase tracking-[0.2em]"
+                          className="bg-blue-600 hover:bg-blue-700 text-foreground px-10 h-14 rounded-2xl font-black text-xs uppercase tracking-[0.2em]"
                         >
                           Go to Library
                         </Button>
@@ -1925,15 +2010,15 @@ export default function App() {
                             <div className="w-20 h-20 bg-blue-500/10 rounded-3xl flex items-center justify-center mb-6">
                               <Scissors className="w-10 h-10 text-blue-400" />
                             </div>
-                            <h3 className="text-3xl font-black mb-3 text-white tracking-tight">Ready to Extract Panels</h3>
-                            <p className="text-white/40 max-w-md mx-auto mb-10 text-sm leading-relaxed font-medium">
+                            <h3 className="text-3xl font-black mb-3 text-foreground tracking-tight">Ready to Extract Panels</h3>
+                            <p className="text-foreground/40 max-w-md mx-auto mb-10 text-sm leading-relaxed font-medium">
                               This chapter has <strong>{currentChapter.pages.length}</strong> pages waiting to be sliced. Auto Snap will let AI find the panels, or you can draw them manually.
                             </p>
                             <div className="flex items-center gap-4">
                               <Button 
                                 onClick={() => processChapter(currentChapter, 'auto')}
                                 disabled={isProcessing}
-                                className="bg-blue-600 hover:bg-blue-700 text-white font-black h-14 px-8 rounded-2xl shadow-xl shadow-blue-500/20 transition-all hover:scale-105"
+                                className="bg-blue-600 hover:bg-blue-700 text-foreground font-black h-14 px-8 rounded-2xl shadow-xl shadow-blue-500/20 transition-all hover:scale-105"
                               >
                                 {isProcessing ? <Loader2 className="w-5 h-5 animate-spin mr-3" /> : <Sparkles className="w-5 h-5 mr-3" />}
                                 Auto Snap Panels
@@ -1942,7 +2027,7 @@ export default function App() {
                                 variant="outline"
                                 onClick={() => processChapter(currentChapter, 'manual')}
                                 disabled={isProcessing}
-                                className="border-white/10 bg-white/5 hover:bg-white/10 text-white font-black h-14 px-8 rounded-2xl transition-all hover:scale-105"
+                                className="border-border bg-foreground/5 hover:bg-foreground/10 text-foreground font-black h-14 px-8 rounded-2xl transition-all hover:scale-105"
                               >
                                 <Plus className="w-5 h-5 mr-3" />
                                 Manual Snap
@@ -1952,12 +2037,12 @@ export default function App() {
                         ) : (
                           <>
                             {/* Quick Actions Toolbar */}
-                            <div className="flex items-center justify-between bg-white/[0.02] border border-white/5 rounded-2xl p-4">
+                            <div className="flex items-center justify-between bg-white/[0.02] border border-border/50 rounded-2xl p-4">
                           <div className="flex items-center gap-4">
-                            <span className="text-xs font-bold text-white/60 uppercase tracking-widest">
+                            <span className="text-xs font-bold text-foreground/60 uppercase tracking-widest">
                               {selectedPanelIds.size} Selected
                             </span>
-                            <div className="h-4 w-px bg-white/10" />
+                            <div className="h-4 w-px bg-foreground/10" />
                             <Button 
                               variant="ghost" 
                               size="sm"
@@ -1982,7 +2067,7 @@ export default function App() {
                                     processChapter(currentChapter, 'auto');
                                   }
                                 }}
-                                className="text-white hover:text-blue-400 hover:bg-blue-400/10 h-8 lg:h-9 font-bold text-[9px] lg:text-[10px] uppercase tracking-widest flex border border-transparent hover:border-blue-500/20"
+                                className="text-foreground hover:text-blue-400 hover:bg-blue-400/10 h-8 lg:h-9 font-bold text-[9px] lg:text-[10px] uppercase tracking-widest flex border border-transparent hover:border-blue-500/20"
                               >
                                 <Sparkles className="w-3.5 h-3.5 mr-2" />
                                 Re-Snap Chapter
@@ -1990,7 +2075,7 @@ export default function App() {
                               <Button 
                                 variant="ghost" 
                                 onClick={() => processChapter(currentChapter, 'manual')}
-                                className="text-white hover:text-white hover:bg-white/10 h-8 lg:h-9 font-bold text-[9px] lg:text-[10px] uppercase tracking-widest flex border border-transparent"
+                                className="text-foreground hover:text-foreground hover:bg-foreground/10 h-8 lg:h-9 font-bold text-[9px] lg:text-[10px] uppercase tracking-widest flex border border-transparent"
                               >
                                 <Scissors className="w-3.5 h-3.5 mr-2" />
                                 Edit Panel Layout
@@ -2006,21 +2091,21 @@ export default function App() {
                                   });
                                   setIsManualSelectorOpen(true);
                                 }}
-                                className="text-white hover:text-white hover:bg-white/10 h-8 lg:h-9 font-bold text-[9px] lg:text-[10px] uppercase tracking-widest flex border border-transparent"
+                                className="text-foreground hover:text-foreground hover:bg-foreground/10 h-8 lg:h-9 font-bold text-[9px] lg:text-[10px] uppercase tracking-widest flex border border-transparent"
                               >
                                 <Plus className="w-3.5 h-3.5 mr-2" />
                                 Add New Panels
                               </Button>
                               
-                              <div className="w-px h-6 bg-white/10 hidden lg:block" />
+                              <div className="w-px h-6 bg-foreground/10 hidden lg:block" />
 
-                              <div className="flex items-center bg-white/5 p-1 rounded-xl border border-white/5 hidden xl:flex lg:mr-2">
+                              <div className="flex items-center bg-foreground/5 p-1 rounded-xl border border-border/50 hidden xl:flex lg:mr-2">
                                 <Button 
                                   variant="ghost" 
                                   size="icon" 
                                   title="List View"
                                   onClick={(e) => { e.stopPropagation(); setPanelViewMode('list'); }} 
-                                  className={`h-8 w-8 rounded-lg transition-all ${panelViewMode === 'list' ? 'bg-blue-600 text-white' : 'text-white/40 hover:text-white hover:bg-white/5'}`}
+                                  className={`h-8 w-8 rounded-lg transition-all ${panelViewMode === 'list' ? 'bg-blue-600 text-foreground' : 'text-foreground/40 hover:text-foreground hover:bg-foreground/5'}`}
                                 >
                                   <List className="w-4 h-4" />
                                 </Button>
@@ -2029,7 +2114,7 @@ export default function App() {
                                   size="icon" 
                                   title="Small Tiles Grid"
                                   onClick={(e) => { e.stopPropagation(); setPanelViewMode('grid-sm'); }} 
-                                  className={`h-8 w-8 rounded-lg transition-all ${panelViewMode === 'grid-sm' ? 'bg-blue-600 text-white' : 'text-white/40 hover:text-white hover:bg-white/5'}`}
+                                  className={`h-8 w-8 rounded-lg transition-all ${panelViewMode === 'grid-sm' ? 'bg-blue-600 text-foreground' : 'text-foreground/40 hover:text-foreground hover:bg-foreground/5'}`}
                                 >
                                   <Grid3X3 className="w-4 h-4" />
                                 </Button>
@@ -2038,7 +2123,7 @@ export default function App() {
                                   size="icon" 
                                   title="Medium Tiles Grid"
                                   onClick={(e) => { e.stopPropagation(); setPanelViewMode('grid-md'); }} 
-                                  className={`h-8 w-8 rounded-lg transition-all ${panelViewMode === 'grid-md' ? 'bg-blue-600 text-white' : 'text-white/40 hover:text-white hover:bg-white/5'}`}
+                                  className={`h-8 w-8 rounded-lg transition-all ${panelViewMode === 'grid-md' ? 'bg-blue-600 text-foreground' : 'text-foreground/40 hover:text-foreground hover:bg-foreground/5'}`}
                                 >
                                   <LayoutGrid className="w-4 h-4" />
                                 </Button>
@@ -2047,7 +2132,7 @@ export default function App() {
                                   size="icon" 
                                   title="Large Panels Grid"
                                   onClick={(e) => { e.stopPropagation(); setPanelViewMode('grid-lg'); }} 
-                                  className={`h-8 w-8 rounded-lg transition-all ${panelViewMode === 'grid-lg' ? 'bg-blue-600 text-white' : 'text-white/40 hover:text-white hover:bg-white/5'}`}
+                                  className={`h-8 w-8 rounded-lg transition-all ${panelViewMode === 'grid-lg' ? 'bg-blue-600 text-foreground' : 'text-foreground/40 hover:text-foreground hover:bg-foreground/5'}`}
                                 >
                                   <Square className="w-4 h-4" />
                                 </Button>
@@ -2056,7 +2141,7 @@ export default function App() {
                                 variant="outline" 
                                 size="sm"
                                 disabled={selectedPanelIds.size === 0 || isProcessing}
-                                className="border-white/10 bg-white/5 hover:bg-white/10 text-white font-bold h-8 lg:h-9 text-[9px] lg:text-[10px] uppercase tracking-widest hidden sm:flex"
+                                className="border-border bg-foreground/5 hover:bg-foreground/10 text-foreground font-bold h-8 lg:h-9 text-[9px] lg:text-[10px] uppercase tracking-widest hidden sm:flex"
                                 onClick={handleBulkScript}
                               >
                                 <Sparkles className="w-3.5 h-3.5 mr-2 text-blue-400" />
@@ -2087,7 +2172,7 @@ export default function App() {
                                 variant="outline" 
                                 size="sm"
                                 disabled={selectedPanelIds.size === 0 || isProcessing}
-                                className="flex-1 border-white/10 bg-white/5 hover:bg-white/10 text-white font-bold h-10 text-[10px] uppercase tracking-widest"
+                                className="flex-1 border-border bg-foreground/5 hover:bg-foreground/10 text-foreground font-bold h-10 text-[10px] uppercase tracking-widest"
                                 onClick={handleBulkScript}
                               >
                                 <Sparkles className="w-4 h-4 mr-2 text-blue-400" />
@@ -2122,20 +2207,20 @@ export default function App() {
                                 <Card 
                                   onClick={() => togglePanelSelection(panel.id)}
                                   className={`
-                                    bg-[#1B143F]/40 border-purple-500/10 overflow-hidden group transition-all duration-300 cursor-pointer h-full
-                                    hover:bg-[#1B143F]/60 hover:border-blue-500/30
-                                    ${selectedPanelIds.has(panel.id) ? 'ring-2 ring-blue-600 border-blue-600 bg-[#1B143F]/80 shadow-lg shadow-blue-900/20' : ''}
+                                    bg-background/40 border-purple-500/10 overflow-hidden group transition-all duration-300 cursor-pointer h-full
+                                    hover:bg-background/60 hover:border-blue-500/30
+                                    ${selectedPanelIds.has(panel.id) ? 'ring-2 ring-blue-600 border-blue-600 bg-background/80 shadow-lg shadow-blue-900/20' : ''}
                                   `}
                                 >
-                            <div className="aspect-square relative bg-black/40 group-hover:bg-black/20 transition-colors border-b border-white/5">
+                            <div className="aspect-square relative bg-background/40 group-hover:bg-background/20 transition-colors border-b border-border/50">
                               <img src={panel.imageUrl} alt={`Panel ${idx + 1}`} className="w-full h-full object-contain transition-transform duration-500 group-hover:scale-[1.05]" />
                               
                               {/* Panel Number Badge */}
                               <div className="absolute top-4 left-4 flex items-center gap-2">
-                                <div className="px-3 py-1 bg-blue-600 text-white text-[10px] font-mono font-bold uppercase tracking-[0.2em] rounded-full shadow-lg shadow-blue-500/20">
+                                <div className="px-3 py-1 bg-blue-600 text-foreground text-[10px] font-mono font-bold uppercase tracking-[0.2em] rounded-full shadow-lg shadow-blue-500/20">
                                   #{String(idx + 1).padStart(2, '0')}
                                 </div>
-                                <div className="px-2 py-1 bg-black/60 backdrop-blur-md rounded-full text-[9px] font-bold text-white/40 uppercase tracking-widest border border-white/5">
+                                <div className="px-2 py-1 bg-background/60 backdrop-blur-md rounded-full text-[9px] font-bold text-foreground/40 uppercase tracking-widest border border-border/50">
                                   Panel ID: {panel.id.slice(0, 6)}
                                 </div>
                               </div>
@@ -2144,13 +2229,13 @@ export default function App() {
                               {selectedPanelIds.has(panel.id) && (
                                 <div className="absolute inset-0 bg-blue-600/10 flex items-center justify-center">
                                   <div className="w-12 h-12 bg-blue-600 rounded-full flex items-center justify-center shadow-2xl shadow-blue-500/50 animate-in zoom-in duration-300">
-                                    <Check className="w-6 h-6 text-white" />
+                                    <Check className="w-6 h-6 text-foreground" />
                                   </div>
                                 </div>
                               )}
 
                               {/* Hover Overlay Actions */}
-                              <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-3 backdrop-blur-[2px]">
+                              <div className="absolute inset-0 bg-background/60 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-3 backdrop-blur-[2px]">
                                 <Button 
                                   size="sm"
                                   variant="secondary"
@@ -2179,7 +2264,7 @@ export default function App() {
                                 <Button 
                                   size="sm"
                                   variant="secondary"
-                                  className="h-9 px-4 rounded-full font-bold text-xs uppercase tracking-wider bg-white/10 text-white border border-white/20 hover:bg-white/20"
+                                  className="h-9 px-4 rounded-full font-bold text-xs uppercase tracking-wider bg-foreground/10 text-foreground border border-border hover:bg-foreground/20"
                                   onClick={(e) => {
                                     e.stopPropagation();
                                     setEditingPanelId(panel.id);
@@ -2215,14 +2300,14 @@ export default function App() {
                                     }));
                                   }}
                                   placeholder="E.g., This is John. He is using his Fireball skill..."
-                                  className="w-full bg-black/20 border border-white/5 rounded-xl p-3 text-xs min-h-[40px] focus:ring-2 focus:ring-purple-500/50 focus:border-purple-500/50 outline-none transition-all text-white/90 placeholder:text-white/20 resize-none leading-relaxed relative z-10"
+                                  className="w-full bg-background/20 border border-border/50 rounded-xl p-3 text-xs min-h-[40px] focus:ring-2 focus:ring-purple-500/50 focus:border-purple-500/50 outline-none transition-all text-foreground/90 placeholder:text-foreground/20 resize-none leading-relaxed relative z-10"
                                 />
                               </div>
 
                               <div className="space-y-1.5">
                                 <div className="flex items-center justify-between">
                                   <label className="text-[9px] font-bold uppercase tracking-[0.2em] text-blue-400/60">Narration Script</label>
-                                  <div className="flex items-center gap-1.5 text-[9px] font-mono text-white/30">
+                                  <div className="flex items-center gap-1.5 text-[9px] font-mono text-foreground/30">
                                     <Volume2 className="w-2.5 h-2.5" />
                                     <span>{panel.script.length} CHARS</span>
                                   </div>
@@ -2246,14 +2331,14 @@ export default function App() {
                                     }));
                                   }}
                                   placeholder="Script..."
-                                  className="w-full bg-black/20 border border-white/5 rounded-xl p-3 text-xs min-h-[60px] focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500/50 outline-none transition-all text-white/90 placeholder:text-white/10 resize-none leading-relaxed relative z-10"
+                                  className="w-full bg-background/20 border border-border/50 rounded-xl p-3 text-xs min-h-[60px] focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500/50 outline-none transition-all text-foreground/90 placeholder:text-foreground/10 resize-none leading-relaxed relative z-10"
                                 />
                               </div>
 
-                              <div className="flex flex-wrap items-center justify-between pt-2 border-t border-white/5 gap-2">
+                              <div className="flex flex-wrap items-center justify-between pt-2 border-t border-border/50 gap-2">
                                 <div className="flex flex-wrap items-center gap-x-4 gap-y-2 flex-1">
                                   <div className="flex flex-col">
-                                    <span className="text-[9px] font-bold text-white/20 uppercase tracking-widest whitespace-nowrap">Duration (s)</span>
+                                    <span className="text-[9px] font-bold text-foreground/20 uppercase tracking-widest whitespace-nowrap">Duration (s)</span>
                                     <input 
                                       type="number"
                                       step="0.1"
@@ -2274,12 +2359,12 @@ export default function App() {
                                           })
                                         }));
                                       }}
-                                      className="bg-transparent text-xs font-mono font-bold text-white/60 outline-none w-12 border-b border-white/10 focus:border-blue-500/50 py-0.5"
+                                      className="bg-transparent text-xs font-mono font-bold text-foreground/60 outline-none w-12 border-b border-border focus:border-blue-500/50 py-0.5"
                                     />
                                   </div>
-                                  <Separator orientation="vertical" className="h-6 bg-white/5 hidden sm:block" />
+                                  <Separator orientation="vertical" className="h-6 bg-foreground/5 hidden sm:block" />
                                   <div className="flex flex-col">
-                                    <span className="text-[9px] font-bold text-white/20 uppercase tracking-widest whitespace-nowrap">Transition</span>
+                                    <span className="text-[9px] font-bold text-foreground/20 uppercase tracking-widest whitespace-nowrap">Transition</span>
                                     <select 
                                       value={panel.transition || 'none'}
                                       onChange={(e) => {
@@ -2296,7 +2381,7 @@ export default function App() {
                                           })
                                         }));
                                       }}
-                                      className="bg-transparent text-xs font-mono font-bold text-white/60 outline-none cursor-pointer appearance-none min-w-[60px]"
+                                      className="bg-transparent text-xs font-mono font-bold text-foreground/60 outline-none cursor-pointer appearance-none min-w-[60px]"
                                     >
                                       <option style={{backgroundColor: '#0f0a20', color: 'white'}} value="none">None</option>
                                       <option style={{backgroundColor: '#0f0a20', color: 'white'}} value="fade">Fade</option>
@@ -2304,9 +2389,9 @@ export default function App() {
                                       <option style={{backgroundColor: '#0f0a20', color: 'white'}} value="zoom">Zoom</option>
                                     </select>
                                   </div>
-                                  <Separator orientation="vertical" className="h-6 bg-white/5 hidden lg:block" />
+                                  <Separator orientation="vertical" className="h-6 bg-foreground/5 hidden lg:block" />
                                   <div className="flex flex-col">
-                                    <span className="text-[9px] font-bold text-white/20 uppercase tracking-widest whitespace-nowrap">AI Length</span>
+                                    <span className="text-[9px] font-bold text-foreground/20 uppercase tracking-widest whitespace-nowrap">AI Length</span>
                                     <select 
                                       value={panel.scriptLength || ''}
                                       onChange={(e) => {
@@ -2323,7 +2408,7 @@ export default function App() {
                                           })
                                         }));
                                       }}
-                                      className="bg-transparent text-xs font-mono font-bold text-white/60 outline-none cursor-pointer appearance-none min-w-[70px]"
+                                      className="bg-transparent text-xs font-mono font-bold text-foreground/60 outline-none cursor-pointer appearance-none min-w-[70px]"
                                     >
                                       <option style={{backgroundColor: '#0f0a20', color: 'white'}} value="">Global</option>
                                       <option style={{backgroundColor: '#0f0a20', color: 'white'}} value="Short">Short (1)</option>
@@ -2354,7 +2439,7 @@ export default function App() {
                                     }}
                                     variant="ghost" 
                                     size="sm" 
-                                    className="h-9 w-9 p-0 rounded-full text-white/20 hover:text-red-400 hover:bg-red-400/10 transition-colors flex items-center justify-center"
+                                    className="h-9 w-9 p-0 rounded-full text-foreground/20 hover:text-red-400 hover:bg-red-400/10 transition-colors flex items-center justify-center"
                                   >
                                     <Trash2 className="w-4 h-4 text-red-500/50 hover:text-red-400" />
                                   </Button>
@@ -2376,16 +2461,16 @@ export default function App() {
               {/* Sidebar Settings */}
               <div className="col-span-3 space-y-6">
                     {/* Library / Current Selection */}
-                    <Card className="bg-[#1B143F]/40 border-purple-500/10 overflow-hidden shadow-xl shadow-purple-900/10">
+                    <Card className="bg-background/40 border-purple-500/10 overflow-hidden shadow-xl shadow-purple-900/10">
                       <CardHeader className="pb-4 flex flex-row items-center justify-between space-y-0 bg-white/[0.02] border-b border-purple-500/10">
                         <div className="flex flex-col">
                           <CardTitle className="text-[10px] font-bold uppercase tracking-[0.2em] text-blue-400/60">Current Selection</CardTitle>
-                          <span className="text-[9px] font-mono text-white/20 uppercase tracking-widest mt-0.5">Active context</span>
+                          <span className="text-[9px] font-mono text-foreground/20 uppercase tracking-widest mt-0.5">Active context</span>
                         </div>
                         <Button 
                           variant="ghost" 
                           size="icon" 
-                          className="h-8 w-8 text-white/40 hover:text-white hover:bg-white/5 rounded-full"
+                          className="h-8 w-8 text-foreground/40 hover:text-foreground hover:bg-foreground/5 rounded-full"
                           onClick={() => setActiveTab('library')}
                         >
                           <Library className="w-4 h-4" />
@@ -2394,26 +2479,26 @@ export default function App() {
                       <CardContent className="p-4 space-y-4">
                         {currentTitleId ? (
                           <div className="space-y-4">
-                            <div className="flex items-center gap-3 p-3 rounded-2xl bg-white/[0.03] border border-white/5">
-                              <div className="w-12 h-12 bg-black rounded-xl border border-white/10 flex items-center justify-center overflow-hidden">
+                            <div className="flex items-center gap-3 p-3 rounded-2xl bg-white/[0.03] border border-border/50">
+                              <div className="w-12 h-12 bg-background rounded-xl border border-border flex items-center justify-center overflow-hidden">
                                 {project.titles.find(t => t.id === currentTitleId)?.coverUrl ? (
                                   <img src={project.titles.find(t => t.id === currentTitleId)?.coverUrl} className="w-full h-full object-cover" />
                                 ) : (
-                                  <ImageIcon className="w-6 h-6 text-white/10" />
+                                  <ImageIcon className="w-6 h-6 text-foreground/10" />
                                 )}
                               </div>
                               <div className="flex flex-col">
                                 <span className="text-[10px] font-bold text-blue-400 uppercase tracking-widest">
                                   {project.categories.find(c => c.id === currentCategoryId)?.name}
                                 </span>
-                                <span className="text-sm font-black text-white uppercase tracking-tight">
+                                <span className="text-sm font-black text-foreground uppercase tracking-tight">
                                   {project.titles.find(t => t.id === currentTitleId)?.name}
                                 </span>
                               </div>
                             </div>
 
                             <div className="space-y-2">
-                              <span className="text-[9px] font-bold uppercase tracking-[0.2em] text-white/20 px-1">Recent Chapters</span>
+                              <span className="text-[9px] font-bold uppercase tracking-[0.2em] text-foreground/20 px-1">Recent Chapters</span>
                               <div className="space-y-2">
                                 {project.chapters
                                   .filter(c => c.titleId === currentTitleId)
@@ -2425,7 +2510,7 @@ export default function App() {
                                   ))
                                 }
                                 {project.chapters.filter(c => c.titleId === currentTitleId).length === 0 && (
-                                  <p className="text-[10px] text-white/10 py-4 text-center italic border border-dashed border-white/5 rounded-xl">
+                                  <p className="text-[10px] text-foreground/10 py-4 text-center italic border border-dashed border-border/50 rounded-xl">
                                     No chapters yet
                                   </p>
                                 )}
@@ -2434,18 +2519,18 @@ export default function App() {
                           </div>
                         ) : (
                           <div className="py-12 flex flex-col items-center justify-center text-center space-y-4">
-                            <div className="w-16 h-16 bg-white/[0.02] rounded-full flex items-center justify-center border border-white/5">
-                              <Library className="w-8 h-8 text-white/10" />
+                            <div className="w-16 h-16 bg-white/[0.02] rounded-full flex items-center justify-center border border-border/50">
+                              <Library className="w-8 h-8 text-foreground/10" />
                             </div>
                             <div className="space-y-1">
-                              <p className="text-xs font-bold text-white/40 uppercase tracking-widest">No Title Selected</p>
-                              <p className="text-[10px] text-white/20 max-w-[180px]">Select a title from the library to start uploading chapters.</p>
+                              <p className="text-xs font-bold text-foreground/40 uppercase tracking-widest">No Title Selected</p>
+                              <p className="text-[10px] text-foreground/20 max-w-[180px]">Select a title from the library to start uploading chapters.</p>
                             </div>
                             <Button 
                               variant="outline" 
                               size="sm"
                               onClick={() => setActiveTab('library')}
-                              className="border-white/10 bg-white/5 hover:bg-white/10 text-[10px] font-bold uppercase tracking-widest h-9 px-6 rounded-xl"
+                              className="border-border bg-foreground/5 hover:bg-foreground/10 text-[10px] font-bold uppercase tracking-widest h-9 px-6 rounded-xl"
                             >
                               Go to Library
                             </Button>
@@ -2454,24 +2539,24 @@ export default function App() {
                       </CardContent>
                     </Card>
 
-                    <Card className="bg-[#1B143F]/40 border-purple-500/10 overflow-hidden shadow-xl shadow-purple-900/10">
+                    <Card className="bg-background/40 border-purple-500/10 overflow-hidden shadow-xl shadow-purple-900/10">
                       <CardHeader className="bg-white/[0.02] border-b border-purple-500/10 pb-6">
                         <div className="flex flex-col">
                           <CardTitle className="text-[10px] font-bold uppercase tracking-[0.2em] text-blue-400/60">Project Statistics</CardTitle>
-                          <span className="text-[9px] font-mono text-white/20 uppercase tracking-widest mt-0.5">Current chapter overview</span>
+                          <span className="text-[9px] font-mono text-foreground/20 uppercase tracking-widest mt-0.5">Current chapter overview</span>
                         </div>
                       </CardHeader>
                       <CardContent className="p-6 space-y-4">
                         <div className="grid grid-cols-2 gap-4">
-                          <div className="bg-white/[0.02] border border-white/5 rounded-xl p-4 flex flex-col items-center justify-center text-center">
-                            <span className="text-2xl font-black text-white">{currentChapter?.panels.length || 0}</span>
-                            <span className="text-[9px] font-bold uppercase tracking-widest text-white/40 mt-1">Total Panels</span>
+                          <div className="bg-white/[0.02] border border-border/50 rounded-xl p-4 flex flex-col items-center justify-center text-center">
+                            <span className="text-2xl font-black text-foreground">{currentChapter?.panels.length || 0}</span>
+                            <span className="text-[9px] font-bold uppercase tracking-widest text-foreground/40 mt-1">Total Panels</span>
                           </div>
-                          <div className="bg-white/[0.02] border border-white/5 rounded-xl p-4 flex flex-col items-center justify-center text-center">
-                            <span className="text-2xl font-black text-white">
+                          <div className="bg-white/[0.02] border border-border/50 rounded-xl p-4 flex flex-col items-center justify-center text-center">
+                            <span className="text-2xl font-black text-foreground">
                               {Math.round((currentChapter?.panels.reduce((acc, p) => acc + p.duration, 0) || 0) / project.settings.globalSpeed)}s
                             </span>
-                            <span className="text-[9px] font-bold uppercase tracking-widest text-white/40 mt-1">Est. Duration</span>
+                            <span className="text-[9px] font-bold uppercase tracking-widest text-foreground/40 mt-1">Est. Duration</span>
                           </div>
                         </div>
                         <div className="bg-blue-600/10 border border-blue-500/20 rounded-xl p-4 flex flex-col items-center justify-center text-center">
@@ -2481,22 +2566,22 @@ export default function App() {
                       </CardContent>
                     </Card>
 
-                    <Card className="bg-[#1B143F]/40 border-purple-500/10 sticky top-28 overflow-hidden shadow-xl shadow-purple-900/10">
+                    <Card className="bg-background/40 border-purple-500/10 sticky top-28 overflow-hidden shadow-xl shadow-purple-900/10">
                       <CardHeader className="bg-white/[0.02] border-b border-purple-500/10 pb-6">
                         <div className="flex flex-col">
                           <CardTitle className="text-[10px] font-bold uppercase tracking-[0.2em] text-blue-400/60">Global Engine Settings</CardTitle>
-                          <span className="text-[9px] font-mono text-white/20 uppercase tracking-widest mt-0.5">Configure output parameters</span>
+                          <span className="text-[9px] font-mono text-foreground/20 uppercase tracking-widest mt-0.5">Configure output parameters</span>
                         </div>
                       </CardHeader>
                       <CardContent className="p-6 space-y-8">
                         <div className="space-y-3">
                           <div className="flex items-center justify-between">
-                            <label className="text-[10px] font-bold uppercase tracking-[0.2em] text-white/40">Script Language</label>
+                            <label className="text-[10px] font-bold uppercase tracking-[0.2em] text-foreground/40">Script Language</label>
                           </div>
                           <select 
                             value={project.settings.language || 'English'}
                             onChange={(e) => setProject(prev => ({ ...prev, settings: { ...prev.settings, language: e.target.value } }))}
-                            className="w-full bg-black/40 border border-white/5 rounded-xl p-4 text-xs font-bold outline-none focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500/50 text-white/80 transition-all appearance-none cursor-pointer"
+                            className="w-full bg-background/40 border border-border/50 rounded-xl p-4 text-xs font-bold outline-none focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500/50 text-foreground/80 transition-all appearance-none cursor-pointer"
                           >
                             <option value="English">English</option>
                             <option value="Bahasa Indonesia">Bahasa Indonesia</option>
@@ -2508,7 +2593,7 @@ export default function App() {
 
                         <div className="space-y-3">
                           <div className="flex items-center justify-between">
-                            <label className="text-[10px] font-bold uppercase tracking-[0.2em] text-white/40">Narrator Voice</label>
+                            <label className="text-[10px] font-bold uppercase tracking-[0.2em] text-foreground/40">Narrator Voice</label>
                             <div className="px-2 py-0.5 bg-blue-600/10 rounded text-[9px] font-mono text-blue-400 border border-blue-500/20">
                               HD ENGINE
                             </div>
@@ -2516,7 +2601,7 @@ export default function App() {
                           <select 
                             value={project.settings.globalVoiceId || 'Kore'}
                             onChange={(e) => setProject(prev => ({ ...prev, settings: { ...prev.settings, globalVoiceId: e.target.value } }))}
-                            className="w-full bg-black/40 border border-white/5 rounded-xl p-4 text-xs font-bold outline-none focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500/50 text-white/80 transition-all appearance-none cursor-pointer"
+                            className="w-full bg-background/40 border border-border/50 rounded-xl p-4 text-xs font-bold outline-none focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500/50 text-foreground/80 transition-all appearance-none cursor-pointer"
                           >
                             <option value="Kore">Kore (Female)</option>
                             <option value="Puck">Puck (Male)</option>
@@ -2528,7 +2613,7 @@ export default function App() {
 
                         <div className="space-y-4">
                           <div className="flex justify-between items-end">
-                            <label className="text-[10px] font-bold uppercase tracking-[0.2em] text-white/40">Narration Speed</label>
+                            <label className="text-[10px] font-bold uppercase tracking-[0.2em] text-foreground/40">Narration Speed</label>
                             <span className="text-sm font-mono text-blue-400 font-bold tracking-tighter">{project.settings.globalSpeed.toFixed(1)}x</span>
                           </div>
                           <Slider 
@@ -2542,21 +2627,21 @@ export default function App() {
                             }}
                             className="py-2"
                           />
-                          <div className="flex justify-between text-[8px] font-mono text-white/10 uppercase tracking-widest">
+                          <div className="flex justify-between text-[8px] font-mono text-foreground/10 uppercase tracking-widest">
                             <span>Slower</span>
                             <span>Normal</span>
                             <span>Faster</span>
                           </div>
                         </div>
 
-                        <div className="h-px bg-white/5" />
+                        <div className="h-px bg-foreground/5" />
 
                         <div className="space-y-4">
-                          <label className="text-[10px] font-bold uppercase tracking-[0.2em] text-white/40">Atmospheric Audio</label>
+                          <label className="text-[10px] font-bold uppercase tracking-[0.2em] text-foreground/40">Atmospheric Audio</label>
                           <div className="flex flex-col gap-3">
                             <Button 
                               variant="outline" 
-                              className="w-full border-white/5 bg-white/[0.02] hover:bg-white/[0.05] hover:border-white/10 gap-3 h-12 rounded-xl text-xs font-bold transition-all"
+                              className="w-full border-border/50 bg-white/[0.02] hover:bg-white/[0.05] hover:border-border gap-3 h-12 rounded-xl text-xs font-bold transition-all"
                               onClick={() => {
                                 const input = document.createElement('input');
                                 input.type = 'file';
@@ -2588,7 +2673,7 @@ export default function App() {
                                 <Button 
                                   variant="ghost" 
                                   size="sm" 
-                                  className="h-7 w-7 p-0 text-white/20 hover:text-red-400 hover:bg-red-400/10 rounded-full transition-colors"
+                                  className="h-7 w-7 p-0 text-foreground/20 hover:text-red-400 hover:bg-red-400/10 rounded-full transition-colors"
                                   onClick={() => setProject(prev => ({ ...prev, settings: { ...prev.settings, musicUrl: undefined } }))}
                                 >
                                   <Trash2 className="w-3.5 h-3.5" />
@@ -2598,52 +2683,52 @@ export default function App() {
                           </div>
                         </div>
 
-                        <div className="h-px bg-white/5" />
+                        <div className="h-px bg-foreground/5" />
 
                         <div className="space-y-3">
                           <div className="flex items-center justify-between">
-                            <label className="text-[10px] font-bold uppercase tracking-[0.2em] text-white/40">Video Ratio / Layout</label>
+                            <label className="text-[10px] font-bold uppercase tracking-[0.2em] text-foreground/40">Video Ratio / Layout</label>
                           </div>
                           <div className="grid grid-cols-2 gap-3">
                             <button
                               type="button"
                               className={`flex flex-col items-center justify-center p-3.5 rounded-xl border text-center transition-all cursor-pointer ${
                                 (project.settings.videoFormat || 'landscape') === 'landscape'
-                                  ? 'bg-blue-600/10 border-blue-500/50 text-white shadow-xl shadow-blue-500/5'
-                                  : 'bg-black/30 border-white/5 text-white/40 hover:text-white/80 hover:bg-white/5'
+                                  ? 'bg-blue-600/10 border-blue-500/50 text-foreground shadow-xl shadow-blue-500/5'
+                                  : 'bg-background/30 border-border/50 text-foreground/40 hover:text-foreground/80 hover:bg-foreground/5'
                               }`}
                               onClick={() => setProject(prev => ({ ...prev, settings: { ...prev.settings, videoFormat: 'landscape' } }))}
                             >
                               <Video className="w-5 h-5 mb-1.5 text-blue-400" />
                               <span className="text-xs font-bold leading-none mb-1">Landscape (16:9)</span>
-                              <span className="text-[9px] text-white/35 font-medium">Standard Web & YouTube</span>
+                              <span className="text-[9px] text-foreground/35 font-medium">Standard Web & YouTube</span>
                             </button>
                             <button
                               type="button"
                               className={`flex flex-col items-center justify-center p-3.5 rounded-xl border text-center transition-all cursor-pointer ${
                                 project.settings.videoFormat === 'vertical'
-                                  ? 'bg-blue-600/10 border-blue-500/50 text-white shadow-xl shadow-blue-500/5'
-                                  : 'bg-black/30 border-white/5 text-white/40 hover:text-white/80 hover:bg-white/5'
+                                  ? 'bg-blue-600/10 border-blue-500/50 text-foreground shadow-xl shadow-blue-500/5'
+                                  : 'bg-background/30 border-border/50 text-foreground/40 hover:text-foreground/80 hover:bg-foreground/5'
                               }`}
                               onClick={() => setProject(prev => ({ ...prev, settings: { ...prev.settings, videoFormat: 'vertical' } }))}
                             >
                               <Smartphone className="w-5 h-5 mb-1.5 text-pink-400" />
                               <span className="text-xs font-bold leading-none mb-1">Vertical (9:16)</span>
-                              <span className="text-[9px] text-white/35 font-medium">YouTube Shorts & Reels</span>
+                              <span className="text-[9px] text-foreground/35 font-medium">YouTube Shorts & Reels</span>
                             </button>
                           </div>
                         </div>
 
-                        <div className="h-px bg-white/5" />
+                        <div className="h-px bg-foreground/5" />
 
                         <div className="space-y-3">
                           <div className="flex items-center justify-between">
-                            <label className="text-[10px] font-bold uppercase tracking-[0.2em] text-white/40">Export Resolution</label>
+                            <label className="text-[10px] font-bold uppercase tracking-[0.2em] text-foreground/40">Export Resolution</label>
                           </div>
                           <select 
                             value={project.settings.exportResolution || '1080p'}
                             onChange={(e) => setProject(prev => ({ ...prev, settings: { ...prev.settings, exportResolution: e.target.value as any } }))}
-                            className="w-full bg-black/40 border border-white/5 rounded-xl p-4 text-xs font-bold outline-none focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500/50 text-white/80 transition-all appearance-none cursor-pointer"
+                            className="w-full bg-background/40 border border-border/50 rounded-xl p-4 text-xs font-bold outline-none focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500/50 text-foreground/80 transition-all appearance-none cursor-pointer"
                           >
                             <option value="720p">720p (HD)</option>
                             <option value="1080p">1080p (Full HD)</option>
@@ -2653,12 +2738,12 @@ export default function App() {
 
                         <div className="space-y-3">
                           <div className="flex items-center justify-between">
-                            <label className="text-[10px] font-bold uppercase tracking-[0.2em] text-white/40">Export Quality</label>
+                            <label className="text-[10px] font-bold uppercase tracking-[0.2em] text-foreground/40">Export Quality</label>
                           </div>
                           <select 
                             value={project.settings.exportQuality || 'High'}
                             onChange={(e) => setProject(prev => ({ ...prev, settings: { ...prev.settings, exportQuality: e.target.value as any } }))}
-                            className="w-full bg-black/40 border border-white/5 rounded-xl p-4 text-xs font-bold outline-none focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500/50 text-white/80 transition-all appearance-none cursor-pointer"
+                            className="w-full bg-background/40 border border-border/50 rounded-xl p-4 text-xs font-bold outline-none focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500/50 text-foreground/80 transition-all appearance-none cursor-pointer"
                           >
                             <option value="Low">Low (Faster Export)</option>
                             <option value="Medium">Medium (Balanced)</option>
@@ -2666,16 +2751,16 @@ export default function App() {
                           </select>
                         </div>
 
-                        <div className="h-px bg-white/5" />
+                        <div className="h-px bg-foreground/5" />
 
                         <div className="space-y-3">
                           <div className="flex items-center justify-between">
-                            <label className="text-[10px] font-bold uppercase tracking-[0.2em] text-white/40">AI Script Length</label>
+                            <label className="text-[10px] font-bold uppercase tracking-[0.2em] text-foreground/40">AI Script Length</label>
                           </div>
                           <select 
                             value={project.settings.scriptLength || 'Normal'}
                             onChange={(e) => setProject(prev => ({ ...prev, settings: { ...prev.settings, scriptLength: e.target.value as any } }))}
-                            className="w-full bg-black/40 border border-white/5 rounded-xl p-4 text-xs font-bold outline-none focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500/50 text-white/80 transition-all appearance-none cursor-pointer"
+                            className="w-full bg-background/40 border border-border/50 rounded-xl p-4 text-xs font-bold outline-none focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500/50 text-foreground/80 transition-all appearance-none cursor-pointer"
                           >
                             <option value="Short">Short (1 Sentence Max)</option>
                             <option value="Normal">Normal (1-3 Sentences)</option>
@@ -2684,11 +2769,11 @@ export default function App() {
                         </div>
 
                         <div className="space-y-4">
-                          <label className="text-[10px] font-bold uppercase tracking-[0.2em] text-white/40">Gemini API Key</label>
+                          <label className="text-[10px] font-bold uppercase tracking-[0.2em] text-foreground/40">Gemini API Key</label>
                           <input 
                             type="password"
                             placeholder="Enter your Gemini API Key"
-                            className="w-full bg-black/40 border border-white/5 rounded-xl p-4 text-xs font-mono outline-none focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500/50 text-white/80 transition-all placeholder:text-white/20"
+                            className="w-full bg-background/40 border border-border/50 rounded-xl p-4 text-xs font-mono outline-none focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500/50 text-foreground/80 transition-all placeholder:text-foreground/20"
                             onChange={(e) => {
                               import('./services/gemini').then(m => m.setCustomGeminiApiKey(e.target.value));
                               if (e.target.value) {
@@ -2696,12 +2781,12 @@ export default function App() {
                               }
                             }}
                           />
-                          <p className="text-[10px] text-white/30 font-medium leading-relaxed">Required for AI TTS and panel detection. Get one from Google AI Studio.</p>
+                          <p className="text-[10px] text-foreground/30 font-medium leading-relaxed">Required for AI TTS and panel detection. Get one from Google AI Studio.</p>
                         </div>
 
                         <Button 
                           onClick={saveDraft}
-                          className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold h-12"
+                          className="w-full bg-blue-600 hover:bg-blue-700 text-foreground font-bold h-12"
                         >
                           <Save className="w-4 h-4 mr-2" /> Save Draft
                         </Button>
@@ -2719,7 +2804,7 @@ export default function App() {
                   exit={{ opacity: 0, scale: 0.95 }}
                   className="flex flex-col items-center justify-center min-h-[60vh] space-y-8"
                 >
-                  <div className={`relative bg-black rounded-3xl overflow-hidden shadow-2xl shadow-blue-500/10 border border-white/10 transition-all duration-300 ${
+                  <div className={`relative bg-background rounded-3xl overflow-hidden shadow-2xl shadow-blue-500/10 border border-border transition-all duration-300 ${
                     project.settings.videoFormat === 'vertical'
                       ? 'aspect-[9/16] h-[650px] md:h-[700px] w-auto'
                       : 'aspect-video w-full max-w-4xl'
@@ -2761,14 +2846,14 @@ export default function App() {
                               animate={animate}
                               transition={{ duration, ease: "easeOut" }}
                               src={currentChapter.panels[currentPanelIndex].imageUrl} 
-                              className="relative z-10 max-h-full max-w-full object-contain shadow-2xl rounded-sm border border-white/5"
+                              className="relative z-10 max-h-full max-w-full object-contain shadow-2xl rounded-sm border border-border/50"
                             />
                           );
                         })()}
                       </div>
                     ) : (
                       <div className="w-full h-full flex items-center justify-center bg-zinc-900/50">
-                        <Play className="w-20 h-20 text-white/10" />
+                        <Play className="w-20 h-20 text-foreground/10" />
                       </div>
                     )}
                     
@@ -2776,7 +2861,7 @@ export default function App() {
                     {currentPanelIndex >= 0 && currentChapter && (
                       <div className="absolute bottom-8 left-0 right-0 px-8 md:px-12 text-center pointer-events-none z-20">
                         <p className={`
-                          font-medium bg-black/75 backdrop-blur-md py-2.5 px-5 rounded-2xl inline-block border border-white/10 text-white text-center shadow-2xl leading-relaxed whitespace-pre-wrap
+                          font-medium bg-background/75 backdrop-blur-md py-2.5 px-5 rounded-2xl inline-block border border-border text-foreground text-center shadow-2xl leading-relaxed whitespace-pre-wrap
                           ${project.settings.videoFormat === 'vertical' ? 'text-xs md:text-sm max-w-[90%]' : 'text-sm md:text-base lg:text-lg max-w-[75%]'}
                         `}>
                           {currentChapter.panels[currentPanelIndex].script}
@@ -2797,7 +2882,7 @@ export default function App() {
                         }
                       }}
                       disabled={!currentChapter}
-                      className="h-16 px-10 rounded-full bg-blue-600 hover:bg-blue-700 text-white font-bold text-lg shadow-xl shadow-blue-500/20"
+                      className="h-16 px-10 rounded-full bg-blue-600 hover:bg-blue-700 text-foreground font-bold text-lg shadow-xl shadow-blue-500/20"
                     >
                       {isPlaying ? <Loader2 className="w-6 h-6 animate-spin mr-2" /> : <Play className="w-6 h-6 mr-2 fill-current" />}
                       {isPlaying ? 'Stop Preview' : 'Start Preview'}
@@ -2807,7 +2892,7 @@ export default function App() {
                       disabled={isProcessing || !currentChapter || currentChapter.panels.some(p => !p.script.trim())}
                       variant="outline" 
                       size="lg"
-                      className="h-16 px-10 rounded-full border-white/10 bg-white/5 hover:bg-white/10 text-lg font-bold"
+                      className="h-16 px-10 rounded-full border-border bg-foreground/5 hover:bg-foreground/10 text-lg font-bold"
                     >
                       <Download className="w-6 h-6 mr-2" /> {isProcessing ? 'Exporting...' : 'Export Video'}
                     </Button>
@@ -2819,26 +2904,26 @@ export default function App() {
                 <div className="max-w-3xl mx-auto space-y-8 animate-in fade-in slide-in-from-bottom-8 duration-700 pb-20">
                   <div className="flex items-center justify-between">
                     <div>
-                      <h2 className="text-2xl font-black tracking-tight text-white mt-10">Social Media Exposure</h2>
-                      <p className="text-white/40 mt-1">Generate high-CTR metadata tailored for TikTok, Reels, & Shorts.</p>
+                      <h2 className="text-2xl font-black tracking-tight text-foreground mt-10">Social Media Exposure</h2>
+                      <p className="text-foreground/40 mt-1">Generate high-CTR metadata tailored for TikTok, Reels, & Shorts.</p>
                     </div>
                     <Button
                       onClick={handleGenerateMetadata}
                       disabled={isProcessing || !currentChapter || currentChapter.panels.length === 0}
-                      className="bg-fuchsia-600 hover:bg-fuchsia-700 text-white font-bold h-12 px-6 rounded-2xl shadow-xl shadow-fuchsia-500/20"
+                      className="bg-fuchsia-600 hover:bg-fuchsia-700 text-foreground font-bold h-12 px-6 rounded-2xl shadow-xl shadow-fuchsia-500/20"
                     >
                       <Sparkles className="w-4 h-4 mr-2" /> {isProcessing ? 'Generating...' : 'Auto-Generate Hooks'}
                     </Button>
                   </div>
                   
                   {currentChapter?.socialMetadata ? (
-                    <Card className="bg-[#1B143F]/40 border-fuchsia-500/20 overflow-hidden shadow-2xl shadow-fuchsia-900/10">
+                    <Card className="bg-background/40 border-fuchsia-500/20 overflow-hidden shadow-2xl shadow-fuchsia-900/10">
                       <CardHeader className="bg-white/[0.02] border-b border-fuchsia-500/10">
                         <CardTitle className="text-fuchsia-400 font-bold uppercase tracking-widest text-[10px]">Viral Video Hooks</CardTitle>
                       </CardHeader>
                       <CardContent className="p-6 space-y-6">
                         <div className="space-y-2">
-                          <label className="text-[10px] font-bold uppercase tracking-[0.2em] text-white/40">Title / Hook (Max 60 Chars)</label>
+                          <label className="text-[10px] font-bold uppercase tracking-[0.2em] text-foreground/40">Title / Hook (Max 60 Chars)</label>
                           <textarea 
                             value={currentChapter.socialMetadata.titleHook}
                             onChange={(e) => setProject(prev => ({
@@ -2847,12 +2932,12 @@ export default function App() {
                                 c.id === currentChapter?.id ? { ...c, socialMetadata: { ...c.socialMetadata!, titleHook: e.target.value } } : c
                               )
                             }))}
-                            className="w-full bg-black/40 border border-white/5 rounded-xl p-4 font-bold text-white text-lg focus:border-fuchsia-500/50 outline-none resize-none"
+                            className="w-full bg-background/40 border border-border/50 rounded-xl p-4 font-bold text-foreground text-lg focus:border-fuchsia-500/50 outline-none resize-none"
                             rows={2}
                           />
                         </div>
                         <div className="space-y-2">
-                          <label className="text-[10px] font-bold uppercase tracking-[0.2em] text-white/40">Caption</label>
+                          <label className="text-[10px] font-bold uppercase tracking-[0.2em] text-foreground/40">Caption</label>
                           <textarea 
                             value={currentChapter.socialMetadata.description}
                             onChange={(e) => setProject(prev => ({
@@ -2861,11 +2946,11 @@ export default function App() {
                                 c.id === currentChapter?.id ? { ...c, socialMetadata: { ...c.socialMetadata!, description: e.target.value } } : c
                               )
                             }))}
-                            className="w-full bg-black/40 border border-white/5 rounded-xl p-4 text-white/80 focus:border-fuchsia-500/50 outline-none resize-vertical min-h-[100px]"
+                            className="w-full bg-background/40 border border-border/50 rounded-xl p-4 text-foreground/80 focus:border-fuchsia-500/50 outline-none resize-vertical min-h-[100px]"
                           />
                         </div>
                         <div className="space-y-2">
-                          <label className="text-[10px] font-bold uppercase tracking-[0.2em] text-white/40">Hashtags</label>
+                          <label className="text-[10px] font-bold uppercase tracking-[0.2em] text-foreground/40">Hashtags</label>
                           <input 
                             value={currentChapter.socialMetadata.hashtags}
                             onChange={(e) => setProject(prev => ({
@@ -2874,13 +2959,13 @@ export default function App() {
                                 c.id === currentChapter?.id ? { ...c, socialMetadata: { ...c.socialMetadata!, hashtags: e.target.value } } : c
                               )
                             }))}
-                            className="w-full bg-black/40 border border-white/5 rounded-xl px-4 py-3 font-mono text-blue-400 focus:border-fuchsia-500/50 outline-none"
+                            className="w-full bg-background/40 border border-border/50 rounded-xl px-4 py-3 font-mono text-blue-400 focus:border-fuchsia-500/50 outline-none"
                           />
                         </div>
                       </CardContent>
                     </Card>
                   ) : (
-                    <div className="h-64 rounded-3xl border-2 border-dashed border-white/10 flex flex-col items-center justify-center text-white/20">
+                    <div className="h-64 rounded-3xl border-2 border-dashed border-border flex flex-col items-center justify-center text-foreground/20">
                       <Sparkles className="w-12 h-12 mb-4 opacity-50" />
                       <p className="font-bold">No Metadata Generated</p>
                       <p className="text-sm">Click the generate button above to analyze your script.</p>
@@ -2893,10 +2978,10 @@ export default function App() {
         </main>
 
         <Dialog open={isAddTitleDialogOpen} onOpenChange={setIsAddTitleDialogOpen}>
-          <DialogContent className="bg-[#020617] border-white/10 text-white max-w-md">
+          <DialogContent className="bg-background border-border text-foreground max-w-md">
             <DialogHeader>
-              <DialogTitle className="text-white">Add New Title</DialogTitle>
-              <p className="text-sm text-white/40">Enter the name of the series you want to add.</p>
+              <DialogTitle className="text-foreground">Add New Title</DialogTitle>
+              <p className="text-sm text-foreground/40">Enter the name of the series you want to add.</p>
             </DialogHeader>
             <div className="py-4">
               <input 
@@ -2904,7 +2989,7 @@ export default function App() {
                 value={newTitleName}
                 onChange={(e) => setNewTitleName(e.target.value)}
                 placeholder="e.g. Solo Leveling"
-                className="w-full bg-black/40 border border-white/10 rounded-xl p-4 text-sm outline-none focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500/50 text-white transition-all"
+                className="w-full bg-background/40 border border-border rounded-xl p-4 text-sm outline-none focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500/50 text-foreground transition-all"
                 onKeyDown={(e) => {
                   if (e.key === 'Enter' && newTitleName.trim()) {
                     const newTitle: Title = {
@@ -2947,7 +3032,7 @@ export default function App() {
                   setNewTitleName('');
                   setIsAddTitleDialogOpen(false);
                 }}
-                className="bg-blue-600 hover:bg-blue-700 text-white"
+                className="bg-blue-600 hover:bg-blue-700 text-foreground"
               >
                 Create Title
               </Button>
@@ -2956,10 +3041,10 @@ export default function App() {
         </Dialog>
 
         <Dialog open={isRenameChapterDialogOpen} onOpenChange={setIsRenameChapterDialogOpen}>
-          <DialogContent className="bg-[#020617] border-white/10 text-white max-w-md">
+          <DialogContent className="bg-background border-border text-foreground max-w-md">
             <DialogHeader>
-              <DialogTitle className="text-white">Rename Chapter</DialogTitle>
-              <p className="text-sm text-white/40">Enter a new name for this chapter.</p>
+              <DialogTitle className="text-foreground">Rename Chapter</DialogTitle>
+              <p className="text-sm text-foreground/40">Enter a new name for this chapter.</p>
             </DialogHeader>
             <div className="py-4">
               <input 
@@ -2967,7 +3052,7 @@ export default function App() {
                 value={newChapterName}
                 onChange={(e) => setNewChapterName(e.target.value)}
                 placeholder="Chapter Name"
-                className="w-full bg-black/40 border border-white/10 rounded-xl p-4 text-sm outline-none focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500/50 text-white transition-all"
+                className="w-full bg-background/40 border border-border rounded-xl p-4 text-sm outline-none focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500/50 text-foreground transition-all"
                 onKeyDown={(e) => {
                   if (e.key === 'Enter' && newChapterName.trim() && chapterToRename) {
                     setProject(prev => ({
@@ -2996,7 +3081,7 @@ export default function App() {
                     setIsRenameChapterDialogOpen(false);
                   }
                 }}
-                className="bg-blue-600 hover:bg-blue-700 text-white"
+                className="bg-blue-600 hover:bg-blue-700 text-foreground"
               >
                 Rename
               </Button>
@@ -3005,10 +3090,10 @@ export default function App() {
         </Dialog>
 
         <Dialog open={isDeleteChapterDialogOpen} onOpenChange={setIsDeleteChapterDialogOpen}>
-          <DialogContent className="bg-[#020617] border-white/10 text-white max-w-md">
+          <DialogContent className="bg-background border-border text-foreground max-w-md">
             <DialogHeader>
-              <DialogTitle className="text-white">Delete Chapter</DialogTitle>
-              <p className="text-sm text-white/40">Are you sure you want to delete "{chapterToDelete?.name}"? This action cannot be undone and all associated panels will be lost.</p>
+              <DialogTitle className="text-foreground">Delete Chapter</DialogTitle>
+              <p className="text-sm text-foreground/40">Are you sure you want to delete "{chapterToDelete?.name}"? This action cannot be undone and all associated panels will be lost.</p>
             </DialogHeader>
             <DialogFooter className="gap-2 sm:gap-0">
               <Button variant="ghost" onClick={() => setIsDeleteChapterDialogOpen(false)}>Cancel</Button>
@@ -3024,7 +3109,7 @@ export default function App() {
                     setIsDeleteChapterDialogOpen(false);
                   }
                 }}
-                className="bg-red-600 hover:bg-red-700 text-white"
+                className="bg-red-600 hover:bg-red-700 text-foreground"
               >
                 Delete Chapter
               </Button>
@@ -3033,7 +3118,7 @@ export default function App() {
         </Dialog>
 
         <Dialog open={isManualSelectorOpen} onOpenChange={setIsManualSelectorOpen}>
-          <DialogContent className="bg-[#020617] border-none text-white max-w-none sm:max-w-none w-screen h-screen flex flex-col p-0 rounded-none overflow-hidden fixed inset-0 translate-x-0 translate-y-0 left-0 top-0">
+          <DialogContent className="bg-background border-none text-foreground max-w-none sm:max-w-none w-screen h-screen flex flex-col p-0 rounded-none overflow-hidden fixed inset-0 translate-x-0 translate-y-0 left-0 top-0">
             {manualSelectionData && (
               <ManualPanelSelector 
                 images={manualSelectionData.pageUrls}
@@ -3050,14 +3135,14 @@ export default function App() {
         </Dialog>
 
         <Dialog open={isExtendDialogOpen} onOpenChange={setIsExtendDialogOpen}>
-          <DialogContent className="bg-[#020617] border-white/10 text-white max-w-2xl">
+          <DialogContent className="bg-background border-border text-foreground max-w-2xl">
             <DialogHeader>
-              <DialogTitle className="text-white">Extend Visuals</DialogTitle>
-              <p className="text-sm text-white">Add background elements or additional images to this panel.</p>
+              <DialogTitle className="text-foreground">Extend Visuals</DialogTitle>
+              <p className="text-sm text-foreground">Add background elements or additional images to this panel.</p>
             </DialogHeader>
             
             <div className="space-y-6 py-4">
-              <div className="aspect-video bg-black rounded-2xl overflow-hidden border border-white/10 relative">
+              <div className="aspect-video bg-background rounded-2xl overflow-hidden border border-border relative">
                 {editingPanelId && currentChapter && (
                   <>
                     <img 
@@ -3077,7 +3162,7 @@ export default function App() {
               <div className="grid grid-cols-2 gap-4">
                 <Button 
                   variant="outline" 
-                  className="h-24 border-white/10 bg-white/5 hover:bg-white/10 flex-col gap-2"
+                  className="h-24 border-border bg-foreground/5 hover:bg-foreground/10 flex-col gap-2"
                   onClick={() => {
                     const input = document.createElement('input');
                     input.type = 'file';
@@ -3108,11 +3193,11 @@ export default function App() {
                   <span className="text-xs font-bold uppercase tracking-wider">Add Background</span>
                 </Button>
                 
-                <div className="p-4 bg-white/5 rounded-2xl border border-white/10 flex flex-col justify-center">
-                  <h4 className="text-xs font-bold uppercase tracking-wider text-white/70 mb-2">Visual Effects</h4>
+                <div className="p-4 bg-foreground/5 rounded-2xl border border-border flex flex-col justify-center">
+                  <h4 className="text-xs font-bold uppercase tracking-wider text-foreground/70 mb-2">Visual Effects</h4>
                   <div className="flex gap-2">
                     {['Blur', 'Zoom', 'Pan'].map(fx => (
-                      <div key={fx} className="px-2 py-1 bg-white/10 rounded text-[10px] font-medium border border-white/10 text-white">
+                      <div key={fx} className="px-2 py-1 bg-foreground/10 rounded text-[10px] font-medium border border-border text-foreground">
                         {fx}
                       </div>
                     ))}
@@ -3122,7 +3207,7 @@ export default function App() {
             </div>
 
             <DialogFooter>
-              <Button onClick={() => setIsExtendDialogOpen(false)} className="bg-blue-600 text-white font-bold">
+              <Button onClick={() => setIsExtendDialogOpen(false)} className="bg-blue-600 text-foreground font-bold">
                 Done
               </Button>
             </DialogFooter>
@@ -3130,16 +3215,16 @@ export default function App() {
         </Dialog>
 
         {/* Footer */}
-        <footer className="border-t border-white/5 py-12 mt-20">
+        <footer className="border-t border-border/50 py-12 mt-20">
           <div className="max-w-7xl mx-auto px-6 flex flex-col md:flex-row justify-between items-center gap-8">
             <div className="flex items-center gap-2 opacity-60">
               <Scissors className="w-4 h-4" />
               <span className="text-xs font-bold uppercase tracking-widest">PanelFlow AI v1.0</span>
             </div>
-            <div className="flex gap-8 text-xs font-medium text-white/60">
-              <a href="#" className="hover:text-white transition-colors">Privacy Policy</a>
-              <a href="#" className="hover:text-white transition-colors">Terms of Service</a>
-              <a href="#" className="hover:text-white transition-colors">Documentation</a>
+            <div className="flex gap-8 text-xs font-medium text-foreground/60">
+              <a href="#" className="hover:text-foreground transition-colors">Privacy Policy</a>
+              <a href="#" className="hover:text-foreground transition-colors">Terms of Service</a>
+              <a href="#" className="hover:text-foreground transition-colors">Documentation</a>
             </div>
           </div>
         </footer>
