@@ -17,6 +17,8 @@ import {
   Settings,
   ChevronRight,
   ChevronDown,
+  ChevronUp,
+  GripVertical,
   Folder as FolderIcon,
   FolderPlus,
   Image as ImageIcon,
@@ -66,8 +68,9 @@ import {
 } from '@/components/ui/dialog';
 
 import { Project, Panel, ComicChapter, Title, Category } from './types';
-import { fileToBase64, cropImage } from './services/imageProcessing';
+import { fileToBase64, cropImage, isBlankImage } from './services/imageProcessing';
 import { detectPanels, generatePanelScripts, generateSpeech, generateSocialMetadata } from './services/gemini';
+import { generateFreeSpeech } from './services/tts';
 import { saveProjectToDB, loadProjectFromDB, exportProjectAsZip, importProjectFromZip } from './services/storage';
 
 import {
@@ -148,6 +151,11 @@ export default function App() {
 
   // Load draft on mount — IndexedDB, fallback to localStorage for migration
   useEffect(() => {
+    const savedApiKey = localStorage.getItem('panelflow_gemini_api_key');
+    if (savedApiKey) {
+      import('./services/gemini').then(m => m.setCustomGeminiApiKey(savedApiKey));
+    }
+    
     (async () => {
       try {
         const saved = await loadProjectFromDB();
@@ -249,6 +257,9 @@ export default function App() {
   const [isPlaying, setIsPlaying] = useState(false);
   const isPlayingRef = useRef(false);
   const [isExtendDialogOpen, setIsExtendDialogOpen] = useState(false);
+  const [isSettingsDialogOpen, setIsSettingsDialogOpen] = useState(false);
+  const [scriptGenerationAbortController, setScriptGenerationAbortController] = useState<AbortController | null>(null);
+  const [apiKeyInputVal, setApiKeyInputVal] = useState(localStorage.getItem('panelflow_gemini_api_key') || '');
   const [editingPanelId, setEditingPanelId] = useState<string | null>(null);
   const [manualSelectionData, setManualSelectionData] = useState<{ chapterId: string; pageUrls: string[]; initialPageIndex: number; appendMode?: boolean; singlePanelMode?: boolean; initialRects?: {pageIndex: number, rects: any[]}[] } | null>(null);
   const [isManualSelectorOpen, setIsManualSelectorOpen] = useState(false);
@@ -259,12 +270,297 @@ export default function App() {
   const [chapterToDelete, setChapterToDelete] = useState<ComicChapter | null>(null);
   const [deletedPanelsStack, setDeletedPanelsStack] = useState<{chapterId: string, panel: Panel, index: number}[]>([]);
   const [newChapterName, setNewChapterName] = useState('');
-  const [chapterViewMode, setChapterViewMode] = useState<'list' | 'grid-sm' | 'grid-md' | 'grid-lg'>('grid-md');
+  const [chapterViewMode, setChapterViewMode] = useState<'list' | 'grid-sm' | 'grid-md' | 'grid-lg'>('list');
   const [titleViewMode, setTitleViewMode] = useState<'list' | 'grid-sm' | 'grid-md' | 'grid-lg'>('grid-md');
   const [panelViewMode, setPanelViewMode] = useState<'list' | 'grid-sm' | 'grid-md' | 'grid-lg'>('grid-md');
   const [newTitleName, setNewTitleName] = useState('');
   const [autoDetectEnabled, setAutoDetectEnabled] = useState(true);
   const [exportProgress, setExportProgress] = useState(0);
+  const [pendingUploadFiles, setPendingUploadFiles] = useState<File[] | null>(null);
+  const [isUploadOptionsDialogOpen, setIsUploadOptionsDialogOpen] = useState(false);
+  const [expandedChapterIds, setExpandedChapterIds] = useState<Set<string>>(new Set());
+
+  // Wizard States
+  const [wizardStep, setWizardStep] = useState(1);
+  const [wizardTitleType, setWizardTitleType] = useState<'create' | 'select'>('create');
+  const [wizardTitleName, setWizardTitleName] = useState('');
+  const [wizardTitleId, setWizardTitleId] = useState('');
+  const [wizardCategoryId, setWizardCategoryId] = useState('manga');
+  const [wizardChapterName, setWizardChapterName] = useState('');
+  const [wizardFiles, setWizardFiles] = useState<File[]>([]);
+
+  const handlePageSort = (chapterId: string, sourceIndex: number, targetIndex: number) => {
+    setProject(prev => {
+      const updatedChapters = prev.chapters.map(c => {
+        if (c.id === chapterId) {
+          const newPages = [...c.pages];
+          const [movedPage] = newPages.splice(sourceIndex, 1);
+          newPages.splice(targetIndex, 0, movedPage);
+          return { ...c, pages: newPages };
+        }
+        return c;
+      });
+      return { ...prev, chapters: updatedChapters };
+    });
+    toast.success("Page order updated!");
+  };
+
+  const handlePageMoveBetweenChapters = (sourceChapterId: string, sourceIndex: number, targetChapterId: string, targetIndex?: number) => {
+    setProject(prev => {
+      const sourceChapter = prev.chapters.find(c => c.id === sourceChapterId);
+      const targetChapter = prev.chapters.find(c => c.id === targetChapterId);
+      if (!sourceChapter || !targetChapter) return prev;
+
+      const newSourcePages = [...sourceChapter.pages];
+      const [movedPage] = newSourcePages.splice(sourceIndex, 1);
+
+      const newTargetPages = [...targetChapter.pages];
+      if (typeof targetIndex === 'number') {
+        newTargetPages.splice(targetIndex, 0, movedPage);
+      } else {
+        newTargetPages.push(movedPage);
+      }
+
+      const panelsToMove = sourceChapter.panels.filter(p => p.fullPageUrl === movedPage);
+      const remainingSourcePanels = sourceChapter.panels.filter(p => p.fullPageUrl !== movedPage).map((p, idx) => ({ ...p, order: idx }));
+      
+      const newTargetPanels = [...targetChapter.panels, ...panelsToMove].map((p, idx) => ({
+        ...p,
+        originalImageId: targetChapterId,
+        order: idx
+      }));
+
+      return {
+        ...prev,
+        chapters: prev.chapters.map(c => {
+          if (c.id === sourceChapterId) {
+            return { ...c, pages: newSourcePages, panels: remainingSourcePanels };
+          }
+          if (c.id === targetChapterId) {
+            return { ...c, pages: newTargetPages, panels: newTargetPanels };
+          }
+          return c;
+        })
+      };
+    });
+    toast.success("Moved page to another chapter!");
+  };
+
+  const handlePageMoveToTitle = (sourceChapterId: string, sourceIndex: number, targetTitleId: string) => {
+    setProject(prev => {
+      const sourceChapter = prev.chapters.find(c => c.id === sourceChapterId);
+      if (!sourceChapter) return prev;
+
+      const newSourcePages = [...sourceChapter.pages];
+      const [movedPage] = newSourcePages.splice(sourceIndex, 1);
+
+      const targetChapters = prev.chapters.filter(c => c.titleId === targetTitleId);
+      let updatedChapters = [...prev.chapters];
+
+      const panelsToMove = sourceChapter.panels.filter(p => p.fullPageUrl === movedPage);
+      const remainingSourcePanels = sourceChapter.panels.filter(p => p.fullPageUrl !== movedPage).map((p, idx) => ({ ...p, order: idx }));
+
+      if (targetChapters.length > 0) {
+        const targetChapter = targetChapters[0];
+        updatedChapters = updatedChapters.map(c => {
+          if (c.id === sourceChapterId) {
+            return { ...c, pages: newSourcePages, panels: remainingSourcePanels };
+          }
+          if (c.id === targetChapter.id) {
+            const newPanels = [...c.panels, ...panelsToMove].map((p, idx) => ({ ...p, originalImageId: c.id, order: idx }));
+            return { ...c, pages: [...c.pages, movedPage], panels: newPanels };
+          }
+          return c;
+        });
+      } else {
+        const newChapterId = generateId();
+        const newChapter: ComicChapter = {
+          id: newChapterId,
+          name: `Chapter from drag & drop`,
+          titleId: targetTitleId,
+          pages: [movedPage],
+          panels: panelsToMove.map((p, idx) => ({ ...p, originalImageId: newChapterId, order: idx })),
+          createdAt: Date.now()
+        };
+        updatedChapters = updatedChapters.map(c => {
+          if (c.id === sourceChapterId) {
+            return { ...c, pages: newSourcePages, panels: remainingSourcePanels };
+          }
+          return c;
+        });
+        updatedChapters.push(newChapter);
+      }
+
+      return { ...prev, chapters: updatedChapters };
+    });
+    toast.success("Moved page to another Title!");
+  };
+
+  const handlePageMoveToCategory = (sourceChapterId: string, sourceIndex: number, targetCategoryId: string) => {
+    setProject(prev => {
+      const sourceChapter = prev.chapters.find(c => c.id === sourceChapterId);
+      if (!sourceChapter) return prev;
+
+      const newSourcePages = [...sourceChapter.pages];
+      const [movedPage] = newSourcePages.splice(sourceIndex, 1);
+
+      const categoryTitles = prev.titles.filter(t => t.categoryId === targetCategoryId);
+      let updatedChapters = [...prev.chapters];
+      let updatedTitles = [...prev.titles];
+
+      const panelsToMove = sourceChapter.panels.filter(p => p.fullPageUrl === movedPage);
+      const remainingSourcePanels = sourceChapter.panels.filter(p => p.fullPageUrl !== movedPage).map((p, idx) => ({ ...p, order: idx }));
+
+      let targetTitleId = '';
+      if (categoryTitles.length > 0) {
+        targetTitleId = categoryTitles[0].id;
+      } else {
+        targetTitleId = generateId();
+        updatedTitles.push({
+          id: targetTitleId,
+          categoryId: targetCategoryId,
+          name: `Quick Title from Move`,
+          createdAt: Date.now()
+        });
+      }
+
+      const targetChapters = updatedChapters.filter(c => c.titleId === targetTitleId);
+      if (targetChapters.length > 0) {
+        const targetChapter = targetChapters[0];
+        updatedChapters = updatedChapters.map(c => {
+          if (c.id === sourceChapterId) {
+            return { ...c, pages: newSourcePages, panels: remainingSourcePanels };
+          }
+          if (c.id === targetChapter.id) {
+            const newPanels = [...c.panels, ...panelsToMove].map((p, idx) => ({ ...p, originalImageId: c.id, order: idx }));
+            return { ...c, pages: [...c.pages, movedPage], panels: newPanels };
+          }
+          return c;
+        });
+      } else {
+        const newChapterId = generateId();
+        const newChapter: ComicChapter = {
+          id: newChapterId,
+          name: `Chapter from Move`,
+          titleId: targetTitleId,
+          pages: [movedPage],
+          panels: panelsToMove.map((p, idx) => ({ ...p, originalImageId: newChapterId, order: idx })),
+          createdAt: Date.now()
+        };
+        updatedChapters = updatedChapters.map(c => {
+          if (c.id === sourceChapterId) {
+            return { ...c, pages: newSourcePages, panels: remainingSourcePanels };
+          }
+          return c;
+        });
+        updatedChapters.push(newChapter);
+      }
+
+      return { ...prev, titles: updatedTitles, chapters: updatedChapters };
+    });
+    toast.success("Moved page to Category!");
+  };
+
+  const handleWizardFinish = async () => {
+    if (wizardFiles.length === 0) {
+      toast.error("Please add at least one image/PDF file.");
+      return;
+    }
+    
+    let resolvedTitleId = '';
+    let resolvedTitleName = '';
+    
+    if (wizardTitleType === 'create') {
+      if (!wizardTitleName.trim()) {
+        toast.error("Please enter a Title name.");
+        return;
+      }
+      resolvedTitleId = generateId();
+      resolvedTitleName = wizardTitleName.trim();
+    } else {
+      if (!wizardTitleId) {
+        toast.error("Please select a Title.");
+        return;
+      }
+      resolvedTitleId = wizardTitleId;
+      resolvedTitleName = project.titles.find(t => t.id === wizardTitleId)?.name || 'Existing Title';
+    }
+    
+    if (!wizardChapterName.trim()) {
+      toast.error("Please enter a Chapter name.");
+      return;
+    }
+    
+    setIsProcessing(true);
+    toast.info("Importing images & processing chapter...");
+    
+    try {
+      // 1. Convert Files to Base64 (Pages)
+      const base64Pages: string[] = [];
+      for (const file of wizardFiles) {
+        if (file.type === 'application/pdf') {
+          const { pdfToImages } = await import('./services/imageProcessing');
+          base64Pages.push(...(await pdfToImages(file)));
+        } else {
+          base64Pages.push(await fileToBase64(file));
+        }
+      }
+      
+      if (base64Pages.length === 0) {
+        throw new Error("No pages could be extracted from files.");
+      }
+      
+      // 2. Create ComicChapter
+      const newChapterId = generateId();
+      const newChapter: ComicChapter = {
+        id: newChapterId,
+        name: wizardChapterName.trim(),
+        titleId: resolvedTitleId,
+        pages: base64Pages,
+        panels: [],
+        createdAt: Date.now()
+      };
+      
+      // 3. Update project structure
+      setProject(prev => {
+        const nextTitles = wizardTitleType === 'create' ? [...prev.titles, {
+          id: resolvedTitleId,
+          categoryId: wizardCategoryId,
+          name: resolvedTitleName,
+          createdAt: Date.now()
+        }] : prev.titles;
+        
+        return {
+          ...prev,
+          titles: nextTitles,
+          chapters: [...prev.chapters, newChapter],
+          currentChapterId: newChapterId
+        };
+      });
+      
+      // Make sure UI lists open correct category and title
+      setCurrentCategoryId(wizardCategoryId);
+      setCurrentTitleId(resolvedTitleId);
+      
+      toast.success(`Chapter "${wizardChapterName.trim()}" created with ${base64Pages.length} pages! Starting Auto Snap...`);
+      
+      // Reset wizard
+      setWizardStep(1);
+      setWizardTitleName('');
+      setWizardTitleId('');
+      setWizardChapterName('');
+      setWizardFiles([]);
+      
+      // 4. Automatically run Auto Snap over the newly created chapter!
+      await processChapter(newChapter, 'auto');
+      
+    } catch (err: any) {
+      console.error(err);
+      toast.error("Wizard Upload failed: " + err.message);
+    } finally {
+      setIsProcessing(false);
+    }
+  };
 
   const processChapter = async (chapter: ComicChapter, mode: 'auto' | 'manual') => {
     if (mode === 'manual') {
@@ -290,6 +586,9 @@ export default function App() {
       const pageResults = [];
       for (let index = 0; index < chapter.pages.length; index++) {
         const pageBase64 = chapter.pages[index];
+        if (index > 0) {
+          await new Promise(resolve => setTimeout(resolve, 1500));
+        }
         try {
           // Process sequentially to avoid API rate limits and high high memory usage
           let detectedRects = await detectPanels(pageBase64);
@@ -327,6 +626,11 @@ export default function App() {
           for (const rect of detectedRects) {
             const cropped = await cropImage(pageBase64, rect, false); // Disable autoTrim to respect AI's tight bounds
             if (cropped) {
+              const isBlank = await isBlankImage(cropped);
+              if (isBlank) {
+                console.log("Filtered out blank panel crop at rect:", rect);
+                continue;
+              }
               panels.push({
                 id: generateId(),
                 imageUrl: cropped,
@@ -374,117 +678,246 @@ export default function App() {
     }
   };
 
-  const ChapterItem = ({ chapter }: { chapter: ComicChapter }) => (
-    <div 
-      className={`
-        p-3 rounded-xl border transition-all duration-300 cursor-pointer flex items-center justify-between group relative
-        ${project.currentChapterId === chapter.id 
-          ? 'bg-blue-600/10 border-blue-500/50 shadow-lg shadow-blue-500/5' 
-          : 'bg-white/[0.02] border-border/50 hover:border-border hover:bg-white/[0.04]'}
-        ${selectedLibraryChapterIds.has(chapter.id) ? 'ring-2 ring-red-500 border-red-500' : ''}
-      `}
-    >
-      <div 
-        className="absolute left-3 top-1/2 -translate-y-1/2 z-20 cursor-pointer"
-        onClick={(e) => {
-          e.stopPropagation();
-          const next = new Set(selectedLibraryChapterIds);
-          if (next.has(chapter.id)) next.delete(chapter.id);
-          else next.add(chapter.id);
-          setSelectedLibraryChapterIds(next);
-        }}
-      >
-        <div className={`w-5 h-5 rounded border flex items-center justify-center transition-colors ${selectedLibraryChapterIds.has(chapter.id) ? 'bg-red-500 border-red-500' : 'border-border bg-background/40 hover:border-border/500'}`}>
-          {selectedLibraryChapterIds.has(chapter.id) && <Check className="w-3 h-3 text-foreground" />}
-        </div>
-      </div>
-
-      <div 
-        className="flex items-center gap-3 overflow-hidden pl-8"
-        onClick={() => setProject(prev => ({ ...prev, currentChapterId: chapter.id }))}
-      >
-        <div className="w-8 h-8 bg-background rounded-lg flex-shrink-0 overflow-hidden border border-border shadow-inner">
-          {chapter.pages[0] && <img src={chapter.pages[0]} className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-110" />}
-        </div>
-        <div className="flex flex-col min-w-0">
-          <span className={`text-[11px] font-bold truncate transition-colors ${project.currentChapterId === chapter.id ? 'text-blue-400' : 'text-foreground/80'}`}>
-            {chapter.name}
-          </span>
-          <span className="text-[9px] font-mono text-foreground/20 uppercase tracking-widest">
-            {chapter.panels.length} Panels
-          </span>
-        </div>
-      </div>
-      <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-all transform translate-x-2 group-hover:translate-x-0">
-        {chapter.panels.length === 0 ? (
-          <>
-            <Button 
-              variant="ghost"
-              size="sm"
-              onClick={(e) => {
-                e.stopPropagation();
-                processChapter(chapter, 'auto');
-              }}
-              disabled={isProcessing}
-              className="h-7 px-3 bg-blue-600/20 text-blue-400 hover:text-foreground hover:bg-blue-600 rounded-full text-[9px] font-bold uppercase tracking-widest mr-2"
-            >
-              Auto Snap
-            </Button>
-            <Button 
-              variant="ghost"
-              size="sm"
-              onClick={(e) => {
-                e.stopPropagation();
-                processChapter(chapter, 'manual');
-              }}
-              disabled={isProcessing}
-              className="h-7 px-3 bg-foreground/5 text-foreground/60 hover:text-foreground hover:bg-foreground/20 rounded-full text-[9px] font-bold uppercase tracking-widest mr-2"
-            >
-              Manual Snap
-            </Button>
-          </>
-        ) : (
-          <Button 
-            variant="ghost"
-            size="sm"
-            onClick={(e) => {
-              e.stopPropagation();
-              setProject(prev => ({ ...prev, currentChapterId: chapter.id }));
-              setActiveTab('edit');
-            }}
-            className="h-7 px-3 bg-foreground/5 text-foreground/80 hover:text-black hover:bg-white rounded-full text-[9px] font-bold uppercase tracking-widest mr-2"
+  const ChapterItem = ({ chapter }: { chapter: ComicChapter }) => {
+    const isExpanded = expandedChapterIds.has(chapter.id);
+    return (
+      <div className="flex flex-col gap-2">
+        <div 
+          className={`
+            p-3 rounded-xl border transition-all duration-300 cursor-pointer flex items-center justify-between group relative
+            ${project.currentChapterId === chapter.id 
+              ? 'bg-blue-600/10 border-blue-500/50 shadow-lg shadow-blue-500/5' 
+              : 'bg-white/[0.02] border-border/50 hover:border-border hover:bg-white/[0.04]'}
+            ${selectedLibraryChapterIds.has(chapter.id) ? 'ring-2 ring-red-500 border-red-500' : ''}
+          `}
+          onDragOver={(e) => {
+            e.preventDefault();
+            e.currentTarget.classList.add('ring-2', 'ring-blue-500', 'border-blue-500');
+          }}
+          onDragLeave={(e) => {
+            e.currentTarget.classList.remove('ring-2', 'ring-blue-500', 'border-blue-500');
+          }}
+          onDrop={(e) => {
+            e.preventDefault();
+            e.currentTarget.classList.remove('ring-2', 'ring-blue-500', 'border-blue-500');
+            try {
+              const data = JSON.parse(e.dataTransfer.getData("application/json"));
+              if (data && typeof data.pageIndex === 'number' && data.sourceChapterId !== chapter.id) {
+                handlePageMoveBetweenChapters(data.sourceChapterId, data.pageIndex, chapter.id);
+              }
+            } catch (err) {
+              console.error(err);
+            }
+          }}
+        >
+          <div 
+            className="absolute left-3 top-1/2 -translate-y-1/2 z-20 cursor-pointer flex items-center gap-1"
+            onClick={(e) => e.stopPropagation()}
           >
-            Open
-          </Button>
+            <div
+              onClick={() => {
+                const next = new Set(selectedLibraryChapterIds);
+                if (next.has(chapter.id)) next.delete(chapter.id);
+                else next.add(chapter.id);
+                setSelectedLibraryChapterIds(next);
+              }}
+            >
+              <div className={`w-5 h-5 rounded border flex items-center justify-center transition-colors ${selectedLibraryChapterIds.has(chapter.id) ? 'bg-red-500 border-red-500' : 'border-border bg-background/40 hover:border-border/500'}`}>
+                {selectedLibraryChapterIds.has(chapter.id) && <Check className="w-3 h-3 text-foreground" />}
+              </div>
+            </div>
+
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-6 w-6 text-foreground/40 hover:text-foreground hover:bg-foreground/10 rounded-lg p-0"
+              onClick={() => {
+                const next = new Set(expandedChapterIds);
+                if (next.has(chapter.id)) next.delete(chapter.id);
+                else next.add(chapter.id);
+                setExpandedChapterIds(next);
+              }}
+            >
+              {isExpanded ? (
+                <ChevronUp className="w-4 h-4 text-blue-400" />
+              ) : (
+                <ChevronDown className="w-4 h-4" />
+              )}
+            </Button>
+          </div>
+
+          <div 
+            className="flex items-center gap-3 overflow-hidden pl-16"
+            onClick={() => setProject(prev => ({ ...prev, currentChapterId: chapter.id }))}
+          >
+            <div className="w-8 h-8 bg-background rounded-lg flex-shrink-0 overflow-hidden border border-border shadow-inner">
+              {chapter.pages[0] && <img src={chapter.pages[0]} className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-110" />}
+            </div>
+            <div className="flex flex-col min-w-0">
+              <span className={`text-[11px] font-bold truncate transition-colors ${project.currentChapterId === chapter.id ? 'text-blue-400' : 'text-foreground/80'}`}>
+                {chapter.name}
+              </span>
+              <span className="text-[9px] font-mono text-foreground/20 uppercase tracking-widest flex items-center gap-2">
+                <span>{chapter.pages.length} Pages</span>
+                <span>•</span>
+                <span>{chapter.panels.length} Panels</span>
+              </span>
+            </div>
+          </div>
+          <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-all transform translate-x-2 group-hover:translate-x-0">
+            {chapter.panels.length === 0 ? (
+              <>
+                <Button 
+                  variant="ghost"
+                  size="sm"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    processChapter(chapter, 'auto');
+                  }}
+                  disabled={isProcessing}
+                  className="h-7 px-3 bg-blue-600/20 text-blue-400 hover:text-foreground hover:bg-blue-600 rounded-full text-[9px] font-bold uppercase tracking-widest mr-2"
+                >
+                  Auto Snap
+                </Button>
+                <Button 
+                  variant="ghost"
+                  size="sm"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    processChapter(chapter, 'manual');
+                  }}
+                  disabled={isProcessing}
+                  className="h-7 px-3 bg-foreground/5 text-foreground/60 hover:text-foreground hover:bg-foreground/20 rounded-full text-[9px] font-bold uppercase tracking-widest mr-2"
+                >
+                  Manual Snap
+                </Button>
+              </>
+            ) : (
+              <Button 
+                variant="ghost"
+                size="sm"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setProject(prev => ({ ...prev, currentChapterId: chapter.id }));
+                  setActiveTab('edit');
+                }}
+                className="h-7 px-3 bg-foreground/5 text-foreground/80 hover:text-black hover:bg-white rounded-full text-[9px] font-bold uppercase tracking-widest mr-2"
+              >
+                Open
+              </Button>
+            )}
+            <Button 
+              variant="ghost" 
+              size="icon" 
+              className="h-7 w-7 text-foreground/20 hover:text-blue-400 hover:bg-blue-400/10 rounded-full"
+              onClick={(e) => {
+                e.stopPropagation();
+                setChapterToRename(chapter);
+                setNewChapterName(chapter.name);
+                setIsRenameChapterDialogOpen(true);
+              }}
+            >
+              <Edit className="w-3.5 h-3.5" />
+            </Button>
+            <Button 
+              variant="ghost" 
+              size="icon" 
+              className="h-7 w-7 text-foreground/20 hover:text-red-400 hover:bg-red-400/10 rounded-full"
+              onClick={(e) => {
+                e.stopPropagation();
+                setChapterToDelete(chapter);
+                setIsDeleteChapterDialogOpen(true);
+              }}
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+            </Button>
+          </div>
+        </div>
+
+        {isExpanded && (
+          <div className="bg-background/20 border border-border/40 rounded-xl p-4 ml-6 flex flex-wrap gap-3 items-center transition-all duration-300">
+            {chapter.pages.map((pageUrl, index) => (
+              <div
+                key={`${chapter.id}-page-${index}`}
+                onDragOver={(e) => {
+                  e.preventDefault();
+                  e.currentTarget.classList.add('border-blue-500', 'scale-105');
+                }}
+                onDragLeave={(e) => {
+                  e.currentTarget.classList.remove('border-blue-500', 'scale-105');
+                }}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  e.currentTarget.classList.remove('border-blue-500', 'scale-105');
+                  try {
+                    const data = JSON.parse(e.dataTransfer.getData("application/json"));
+                    if (data && typeof data.pageIndex === 'number') {
+                      if (data.sourceChapterId === chapter.id) {
+                        handlePageSort(chapter.id, data.pageIndex, index);
+                      } else {
+                        handlePageMoveBetweenChapters(data.sourceChapterId, data.pageIndex, chapter.id, index);
+                      }
+                    }
+                  } catch (err) {
+                    console.error(err);
+                  }
+                }}
+                className="transition-all duration-200 border border-transparent rounded-lg p-0.5"
+              >
+                <div 
+                  draggable
+                  onDragStart={(e) => {
+                    e.dataTransfer.setData("application/json", JSON.stringify({
+                      sourceChapterId: chapter.id,
+                      pageIndex: index
+                    }));
+                    e.dataTransfer.effectAllowed = "move";
+                  }}
+                  className="relative w-16 h-24 bg-background border border-border/80 rounded-lg overflow-hidden cursor-grab active:cursor-grabbing hover:border-blue-500/50 transition-all group/page shadow-md"
+                >
+                  <img src={pageUrl} className="w-full h-full object-cover" />
+                  <div className="absolute inset-0 bg-black/50 flex flex-col items-center justify-center opacity-0 group-hover/page:opacity-100 transition-opacity p-1 text-center">
+                    <span className="text-[9px] font-bold text-white uppercase tracking-wider">Page {index + 1}</span>
+                    <span className="text-[7px] text-white/60 mt-0.5">Drag to move</span>
+                  </div>
+                </div>
+              </div>
+            ))}
+
+            <div
+              onDragOver={(e) => {
+                e.preventDefault();
+                e.currentTarget.classList.add('border-dashed', 'border-blue-500', 'bg-blue-500/5');
+              }}
+              onDragLeave={(e) => {
+                e.currentTarget.classList.remove('border-dashed', 'border-blue-500', 'bg-blue-500/5');
+              }}
+              onDrop={(e) => {
+                e.preventDefault();
+                e.currentTarget.classList.remove('border-dashed', 'border-blue-500', 'bg-blue-500/5');
+                try {
+                  const data = JSON.parse(e.dataTransfer.getData("application/json"));
+                  if (data && typeof data.pageIndex === 'number') {
+                    if (data.sourceChapterId === chapter.id) {
+                      handlePageSort(chapter.id, data.pageIndex, chapter.pages.length - 1);
+                    } else {
+                      handlePageMoveBetweenChapters(data.sourceChapterId, data.pageIndex, chapter.id);
+                    }
+                  }
+                } catch (err) {
+                  console.error(err);
+                }
+              }}
+              className="w-16 h-24 border border-dashed border-border/30 rounded-lg flex flex-col items-center justify-center text-foreground/20 hover:text-blue-500/50 hover:border-blue-500/30 transition-all"
+            >
+              <Plus className="w-4 h-4" />
+              <span className="text-[6px] font-bold mt-1 uppercase tracking-widest">Drop here</span>
+            </div>
+          </div>
         )}
-        <Button 
-          variant="ghost" 
-          size="icon" 
-          className="h-7 w-7 text-foreground/20 hover:text-blue-400 hover:bg-blue-400/10 rounded-full"
-          onClick={(e) => {
-            e.stopPropagation();
-            setChapterToRename(chapter);
-            setNewChapterName(chapter.name);
-            setIsRenameChapterDialogOpen(true);
-          }}
-        >
-          <Edit className="w-3.5 h-3.5" />
-        </Button>
-        <Button 
-          variant="ghost" 
-          size="icon" 
-          className="h-7 w-7 text-foreground/20 hover:text-red-400 hover:bg-red-400/10 rounded-full"
-          onClick={(e) => {
-            e.stopPropagation();
-            setChapterToDelete(chapter);
-            setIsDeleteChapterDialogOpen(true);
-          }}
-        >
-          <Trash2 className="w-3.5 h-3.5" />
-        </Button>
       </div>
-    </div>
-  );
+    );
+  };
 
   // Auto-save to IndexedDB with 2s debounce whenever project changes
   useEffect(() => {
@@ -531,79 +964,193 @@ export default function App() {
     toast.success('Chapters deleted');
   };
 
-  const onDrop = useCallback(async (acceptedFiles: File[]) => {
+  const handleMergeAndAutoSnap = async () => {
+    if (selectedLibraryChapterIds.size < 2) {
+      toast.error("Please select at least 2 chapters to merge.");
+      return;
+    }
+
+    const selectedChapters = project.chapters
+      .filter(c => selectedLibraryChapterIds.has(c.id))
+      .sort((a, b) => a.createdAt - b.createdAt);
+
+    if (selectedChapters.length === 0) return;
+
+    const mergedPages: string[] = [];
+    const mergedPanels: Panel[] = [];
+    
+    selectedChapters.forEach(c => {
+      mergedPages.push(...c.pages);
+      c.panels.forEach(p => {
+        mergedPanels.push({
+          ...p,
+          order: mergedPanels.length
+        });
+      });
+    });
+
+    const mergedName = `Merged: ${selectedChapters.map(c => c.name).join(' & ')}`.substring(0, 80);
+    const mergedChapter: ComicChapter = {
+      id: generateId(),
+      name: mergedName,
+      titleId: selectedChapters[0].titleId,
+      pages: mergedPages,
+      panels: mergedPanels,
+      createdAt: Date.now()
+    };
+
+    setProject(prev => ({
+      ...prev,
+      chapters: [...prev.chapters, mergedChapter],
+      currentChapterId: mergedChapter.id
+    }));
+
+    setSelectedLibraryChapterIds(new Set());
+    toast.success(`Chapters merged successfully into "${mergedName}"! Starting Auto Snap...`);
+    setActiveTab('edit');
+    
+    await processChapter(mergedChapter, 'auto');
+  };
+
+  const processUpload = async (files: File[], mode: 'separate' | 'combine' | 'append') => {
     setIsProcessing(true);
     try {
-      const newPending: ComicChapter[] = [];
-      
-      for (const file of acceptedFiles) {
-        let pages: string[] = [];
-        if (file.type === 'application/pdf') {
-          const { pdfToImages } = await import('./services/imageProcessing');
-          pages = await pdfToImages(file);
-        } else {
-          pages = [await fileToBase64(file)];
-        }
+      let catId = currentCategoryId;
+      let cats = [...project.categories];
+      let tId = currentTitleId;
+      let titles = [...project.titles];
 
-        newPending.push({
-          id: generateId(),
-          name: file.name,
-          titleId: 'TBD', // We will fix this in setProject
-          pages,
-          panels: [],
+      if (!tId) {
+        if (!catId) {
+          if (cats.length === 0) {
+            catId = generateId();
+            cats.push({ id: catId, name: 'Manga', titleIds: [] });
+          } else {
+            catId = cats[0].id;
+          }
+        }
+        tId = generateId();
+        titles = [{
+          id: tId,
+          categoryId: catId,
+          name: 'Quick Upload',
           createdAt: Date.now()
-        });
+        }, ...titles];
+        
+        setTimeout(() => {
+          setCurrentCategoryId(catId);
+          setCurrentTitleId(tId);
+        }, 0);
       }
 
-      setProject(prev => {
-        let catId = currentCategoryId;
-        let cats = [...prev.categories];
-        let tId = currentTitleId;
-        let titles = [...prev.titles];
-
-        if (!tId) {
-          if (!catId) {
-            if (cats.length === 0) {
-              catId = generateId();
-              cats.push({ id: catId, name: 'Manga', titleIds: [] });
-            } else {
-              catId = cats[0].id;
-            }
+      if (mode === 'append') {
+        if (!project.currentChapterId) throw new Error("No active chapter to append to.");
+        
+        const newPages: string[] = [];
+        for (const file of files) {
+          if (file.type === 'application/pdf') {
+            const { pdfToImages } = await import('./services/imageProcessing');
+            newPages.push(...(await pdfToImages(file)));
+          } else {
+            newPages.push(await fileToBase64(file));
           }
-          tId = generateId();
-          titles = [{
-            id: tId,
-            categoryId: catId,
-            name: 'Quick Upload',
-            createdAt: Date.now()
-          }, ...titles];
-          
-          // Schedule state update for the UI Selection
-          setTimeout(() => {
-            setCurrentCategoryId(catId);
-            setCurrentTitleId(tId);
-          }, 0);
         }
 
-        // Fix titleId of new chapters
-        newPending.forEach(c => c.titleId = tId!);
-
-        return {
+        setProject(prev => ({
           ...prev,
           categories: cats,
           titles: titles,
-          chapters: [...prev.chapters, ...newPending]
+          chapters: prev.chapters.map(c => 
+            c.id === prev.currentChapterId 
+              ? { ...c, pages: [...c.pages, ...newPages] } 
+              : c
+          )
+        }));
+
+        toast.success(`Appended ${newPages.length} pages to the current chapter!`);
+      } else if (mode === 'combine') {
+        const combinedPages: string[] = [];
+        for (const file of files) {
+          if (file.type === 'application/pdf') {
+            const { pdfToImages } = await import('./services/imageProcessing');
+            combinedPages.push(...(await pdfToImages(file)));
+          } else {
+            combinedPages.push(await fileToBase64(file));
+          }
+        }
+
+        const firstFile = files[0];
+        const chapterName = files.length > 1 ? `${firstFile.name} + ${files.length - 1} more` : firstFile.name;
+
+        const newChapter: ComicChapter = {
+          id: generateId(),
+          name: chapterName,
+          titleId: tId,
+          pages: combinedPages,
+          panels: [],
+          createdAt: Date.now()
         };
-      });
-      
-      toast.success(`Uploaded ${acceptedFiles.length} files. Now snap the panels to start editing!`);
+
+        setProject(prev => ({
+          ...prev,
+          categories: cats,
+          titles: titles,
+          chapters: [...prev.chapters, newChapter],
+          currentChapterId: newChapter.id
+        }));
+
+        toast.success(`Created chapter "${chapterName}" with ${combinedPages.length} pages!`);
+      } else {
+        const newPending: ComicChapter[] = [];
+        for (const file of files) {
+          let pages: string[] = [];
+          if (file.type === 'application/pdf') {
+            const { pdfToImages } = await import('./services/imageProcessing');
+            pages = await pdfToImages(file);
+          } else {
+            pages = [await fileToBase64(file)];
+          }
+
+          newPending.push({
+            id: generateId(),
+            name: file.name,
+            titleId: tId,
+            pages,
+            panels: [],
+            createdAt: Date.now()
+          });
+        }
+
+        setProject(prev => ({
+          ...prev,
+          categories: cats,
+          titles: titles,
+          chapters: [...prev.chapters, ...newPending],
+          currentChapterId: newPending[newPending.length - 1]?.id || prev.currentChapterId
+        }));
+
+        toast.success(`Created ${files.length} separate chapters!`);
+      }
     } catch (error: any) {
-      console.error("Upload error:", error?.message || error);
-      toast.error('Failed to upload files.');
+      console.error("Upload process error:", error);
+      toast.error("Upload failed: " + error.message);
     } finally {
       setIsProcessing(false);
+      setPendingUploadFiles(null);
+      setIsUploadOptionsDialogOpen(false);
     }
-  }, [currentTitleId, currentCategoryId]);
+  };
+
+  const onDrop = useCallback(async (acceptedFiles: File[]) => {
+    if (acceptedFiles.length === 0) return;
+    
+    if (acceptedFiles.length > 1 || project.currentChapterId) {
+      setPendingUploadFiles(acceptedFiles);
+      setIsUploadOptionsDialogOpen(true);
+    } else {
+      await processUpload(acceptedFiles, 'separate');
+    }
+  }, [project.currentChapterId, currentTitleId, currentCategoryId]);
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({ 
     onDrop,
@@ -734,6 +1281,8 @@ export default function App() {
   const handleBulkScript = async () => {
     if (!currentChapter || selectedPanelIds.size === 0) return;
     setIsProcessing(true);
+    const controller = new AbortController();
+    setScriptGenerationAbortController(controller);
     try {
       const selectedPanels = currentChapter.panels.filter(p => selectedPanelIds.has(p.id));
       console.log("Generating scripts for panels:", selectedPanels.map(p => p.id));
@@ -744,7 +1293,8 @@ export default function App() {
         selectedPanels.map((p) => ({ id: p.id, imageUrl: p.imageUrl, dialogue: p.dialogue, context: p.context, scriptLength: p.scriptLength })),
         project.settings.language,
         globalContext,
-        project.settings.scriptLength
+        project.settings.scriptLength,
+        controller.signal
       );
       console.log("Received scripts:", scripts);
       
@@ -767,14 +1317,19 @@ export default function App() {
       toast.success('Scripts generated for selected panels!');
       setSelectedPanelIds(new Set());
     } catch (error: any) {
-      console.error("Bulk script error:", error?.message || error);
-      if (error?.message?.includes('429') || error?.message?.includes('RESOURCE_EXHAUSTED')) {
-         toast.error("API Quota Exhausted. Please wait a few minutes before trying again.", { duration: 5000 });
+      if (error?.name === 'AbortError' || error?.message?.includes('Aborted') || controller.signal.aborted) {
+        toast.info("Script generation canceled.");
       } else {
-         toast.error(`Failed to generate scripts: ${error?.message || 'Unknown error'}`);
+        console.error("Bulk script error:", error?.message || error);
+        if (error?.message?.includes('429') || error?.message?.includes('RESOURCE_EXHAUSTED')) {
+           toast.error("API Quota Exhausted. Please wait a few minutes before trying again.", { duration: 5000 });
+        } else {
+           toast.error(`Failed to generate scripts: ${error?.message || 'Unknown error'}`);
+        }
       }
     } finally {
       setIsProcessing(false);
+      setScriptGenerationAbortController(null);
     }
   };
 
@@ -815,6 +1370,8 @@ export default function App() {
   const handleGenerateScripts = async () => {
     if (!currentChapter) return;
     setIsProcessing(true);
+    const controller = new AbortController();
+    setScriptGenerationAbortController(controller);
     try {
       console.log("Generating scripts for all panels in chapter:", currentChapter.id);
       
@@ -824,7 +1381,8 @@ export default function App() {
         currentChapter.panels.map(p => ({ id: p.id, imageUrl: p.imageUrl, dialogue: p.dialogue, context: p.context, scriptLength: p.scriptLength })),
         project.settings.language,
         globalContext,
-        project.settings.scriptLength
+        project.settings.scriptLength,
+        controller.signal
       );
       console.log("Received scripts:", scripts);
       
@@ -845,14 +1403,19 @@ export default function App() {
       }));
       toast.success('Scripts generated successfully!');
     } catch (error: any) {
-      console.error("Generate scripts error:", error?.message || error);
-      if (error?.message?.includes('429') || error?.message?.includes('RESOURCE_EXHAUSTED')) {
-         toast.error("API Quota Exhausted. Please wait a few minutes before trying again.", { duration: 5000 });
+      if (error?.name === 'AbortError' || error?.message?.includes('Aborted') || controller.signal.aborted) {
+        toast.info("Script generation canceled.");
       } else {
-         toast.error(`Failed to generate scripts: ${error?.message || 'Unknown error'}`);
+        console.error("Generate scripts error:", error?.message || error);
+        if (error?.message?.includes('429') || error?.message?.includes('RESOURCE_EXHAUSTED')) {
+           toast.error("API Quota Exhausted. Please wait a few minutes before trying again.", { duration: 5000 });
+        } else {
+           toast.error(`Failed to generate scripts: ${error?.message || 'Unknown error'}`);
+        }
       }
     } finally {
       setIsProcessing(false);
+      setScriptGenerationAbortController(null);
     }
   };
 
@@ -881,7 +1444,9 @@ export default function App() {
         if (panel.script) {
           try {
             // Generating sequentially
-            const base64Audio = await generateSpeech(panel.script, project.settings.globalVoiceId);
+            const base64Audio = project.settings.voiceEngine === 'gemini'
+              ? await generateSpeech(panel.script, project.settings.globalVoiceId)
+              : await generateFreeSpeech(panel.script, project.settings.language);
             const binaryString = atob(base64Audio);
             const bytes = new Uint8Array(binaryString.length);
             for (let j = 0; j < binaryString.length; j++) {
@@ -1326,6 +1891,330 @@ export default function App() {
     }
   };
 
+  const handleDownloadFFmpegProject = async () => {
+    if (!currentChapter || currentChapter.panels.length === 0) {
+      toast.error("No panels to export. Please add some panels first.");
+      return;
+    }
+    
+    setIsProcessing(true);
+    setExportProgress(0);
+    toast.info("Generating Free TTS voice tracks for FFmpeg Offline project...");
+
+    try {
+      const JSZip = (await import('jszip')).default;
+      const zip = new JSZip();
+      
+      const panelsFolder = zip.folder("panels");
+      const audioFolder = zip.folder("audio");
+      
+      const srtLines: string[] = [];
+      const renderPyPanels: any[] = [];
+      
+      let totalElapsedMs = 0;
+      let failedAudioCount = 0;
+      const totalPanels = currentChapter.panels.length;
+      
+      for (let i = 0; i < currentChapter.panels.length; i++) {
+        const panel = currentChapter.panels[i];
+        
+        // 1. Save panel image to panels/panel_001.png
+        const imageBase64 = panel.imageUrl;
+        const imgData = imageBase64.split(',')[1] || imageBase64;
+        const panelFilename = `panel_${String(i + 1).padStart(3, '0')}.png`;
+        panelsFolder?.file(panelFilename, imgData, { base64: true });
+
+        // 2. Generate free TTS voice track with delay & retries
+        let duration = 3.0; // fallback duration
+        const audioFilename = `audio_${String(i + 1).padStart(3, '0')}.mp3`;
+        
+        if (panel.script) {
+          // Introduce a sequential delay of 1200ms between consecutive calls to avoid rate limits
+          if (i > 0) {
+            await new Promise(resolve => setTimeout(resolve, 1200));
+          }
+          
+          let base64Audio = '';
+          let success = false;
+          let retries = 3;
+          let delay = 1500;
+          
+          for (let attempt = 0; attempt < retries; attempt++) {
+            try {
+              base64Audio = project.settings.voiceEngine === 'gemini'
+                ? await generateSpeech(panel.script, project.settings.globalVoiceId)
+                : await generateFreeSpeech(panel.script, project.settings.language);
+              
+              if (base64Audio) {
+                success = true;
+                break;
+              }
+            } catch (e: any) {
+              console.warn(`Attempt ${attempt + 1} failed for panel ${i + 1} TTS:`, e);
+              if (attempt < retries - 1) {
+                await new Promise(resolve => setTimeout(resolve, delay));
+                delay *= 2; // exponential backoff
+              }
+            }
+          }
+          
+          if (success && base64Audio) {
+            try {
+              const binaryString = atob(base64Audio);
+              const bytes = new Uint8Array(binaryString.length);
+              for (let j = 0; j < binaryString.length; j++) {
+                bytes[j] = binaryString.charCodeAt(j);
+              }
+              
+              audioFolder?.file(audioFilename, bytes.buffer);
+
+              // Get duration of the MP3 file by decoding it locally in browser AudioContext!
+              const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
+              const decoded = await audioCtx.decodeAudioData(bytes.buffer.slice(0));
+              duration = decoded.duration / project.settings.globalSpeed;
+              await audioCtx.close();
+            } catch (err) {
+              console.error(`Error decoding audio data for panel ${i + 1}:`, err);
+              // Fallback duration based on words
+              duration = Math.max(3.0, (panel.script.split(/\s+/).length * 0.4));
+            }
+          } else {
+            console.error(`Skipping TTS audio for panel ${i + 1} after all retry failures.`);
+            failedAudioCount++;
+            // Fallback duration based on words
+            duration = Math.max(3.0, (panel.script.split(/\s+/).length * 0.4));
+          }
+        }
+        
+        // Calculate SRT timings
+        const startMs = totalElapsedMs;
+        const endMs = totalElapsedMs + Math.round(duration * 1000);
+        totalElapsedMs = endMs;
+
+        const formatSrtTime = (ms: number) => {
+          const totalSecs = Math.floor(ms / 1000);
+          const remainMs = ms % 1000;
+          const hrs = Math.floor(totalSecs / 3600);
+          const mins = Math.floor((totalSecs % 3600) / 60);
+          const secs = totalSecs % 60;
+          return `${String(hrs).padStart(2, '0')}:${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')},${String(remainMs).padStart(3, '0')}`;
+        };
+
+        // 3. Build SRT lines
+        srtLines.push(String(i + 1));
+        srtLines.push(`${formatSrtTime(startMs)} --> ${formatSrtTime(endMs)}`);
+        srtLines.push(panel.script || "(Tanpa Suara)");
+        srtLines.push("");
+
+        // 4. Save metadata for render.py
+        renderPyPanels.push({
+          image: `panels/${panelFilename}`,
+          audio: panel.script ? `audio/${audioFilename}` : null,
+          duration: parseFloat(duration.toFixed(3)),
+          text: panel.script || ""
+        });
+
+        setExportProgress(Math.round(((i + 1) / totalPanels) * 90));
+      }
+
+      // Save subtitles.srt
+      zip.file("subtitles.srt", srtLines.join("\n"));
+
+      // 5. Generate render.py
+      const isVertical = project.settings.videoFormat === 'vertical';
+      const resolution = project.settings.exportResolution || '1080p';
+      let w = 1920;
+      let h = 1080;
+      if (resolution === '720p') {
+        w = isVertical ? 720 : 1280;
+        h = isVertical ? 1280 : 720;
+      } else if (resolution === '4K') {
+        w = isVertical ? 2160 : 3840;
+        h = isVertical ? 3840 : 2160;
+      } else { // 1080p
+        w = isVertical ? 1080 : 1920;
+        h = isVertical ? 1920 : 1080;
+      }
+
+      const pythonScript = `import os
+import json
+import subprocess
+import sys
+
+# Panel metadata generated by PanelFlow AI
+panels = ${JSON.stringify(renderPyPanels, null, 2)}
+width = ${w}
+height = ${h}
+is_vertical = ${isVertical ? 'True' : 'False'}
+
+print("=== PanelFlow AI: Offline FFmpeg Video Renderer ===")
+print("Checking for FFmpeg on your system...")
+try:
+    subprocess.run(["ffmpeg", "-version"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    print("FFmpeg detected successfully!")
+except Exception:
+    print("ERROR: FFmpeg tidak ditemukan pada system Anda.")
+    print("Silakan install FFmpeg dan tambahkan ke PATH Windows Anda.")
+    sys.exit(1)
+
+# Ensure temp directory exists
+os.makedirs("temp", exist_ok=True)
+
+# 1. Compile each panel into a single dynamic video clip
+clips = []
+for i, p in enumerate(panels):
+    clip_output = f"temp/clip_{i:03d}.mp4"
+    img_path = p["image"]
+    aud_path = p["audio"]
+    dur = p["duration"]
+    
+    print(f"Rendering panel {i+1}/{len(panels)} ({dur}s)...")
+    
+    # POWERPOINT STYLE TRANSITION EFFECTS
+    # We choose a different transition effect for each clip dynamically
+    fx_index = i % 4
+    if fx_index == 0:
+        # Slow Zoom In
+        vf = f"scale={w}:{h}:force_original_aspect_ratio=decrease,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,zoompan=z='min(zoom+0.0012,1.2)':d={int(dur*30)}:s={w}x{h}:x='iw/2-(iw/zoom)/2':y='ih/2-(ih/zoom)/2'"
+    elif fx_index == 1:
+        # Slow Zoom Out
+        vf = f"scale={w}:{h}:force_original_aspect_ratio=decrease,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,zoompan=z='1.2-0.0012*on':d={int(dur*30)}:s={w}x{h}:x='iw/2-(iw/zoom)/2':y='ih/2-(iw/zoom)/2'"
+    elif fx_index == 2:
+        # Pan Left
+        vf = f"scale={w+200}:{h}:force_original_aspect_ratio=decrease,pad={w+200}:{h}:(ow-iw)/2:(oh-ih)/2,zoompan=z=1.1:d={int(dur*30)}:s={w}x{h}:x='(iw-iw/zoom)*(1-on/({int(dur*30)}))':y='(ih-ih/zoom)/2'"
+    else:
+        # Pan Right
+        vf = f"scale={w+200}:{h}:force_original_aspect_ratio=decrease,pad={w+200}:{h}:(ow-iw)/2:(oh-ih)/2,zoompan=z=1.1:d={int(dur*30)}:s={w}x{h}:x='(iw-iw/zoom)*(on/({int(dur*30)}))':y='(ih-ih/zoom)/2'"
+
+    # Overlay blurry background for video landscape if aspect ratio doesn't match
+    if not is_vertical:
+        # Blurry background overlay logic
+        bg_filter = f"[0:v]scale={w}:{h}:force_original_aspect_ratio=increase,boxblur=15[bg];[bg][0:v]scale={w}:{h}:force_original_aspect_ratio=decrease[fg];[bg][fg]overlay=(main_w-overlay_w)/2:(main_h-overlay_h)/2"
+        vf = f"{bg_filter},{vf}"
+
+    # Build the ffmpeg command for this clip
+    cmd = [
+        "ffmpeg", "-y", "-loop", "1", "-i", img_path
+    ]
+    if aud_path and os.path.exists(aud_path):
+        cmd.extend(["-i", aud_path])
+    else:
+        cmd.extend(["-f", "lavfi", "-i", "anullsrc=r=44100:cl=mono"])
+        
+    cmd.extend([
+        "-filter_complex", vf,
+        "-c:v", "libx264", "-t", str(dur),
+        "-pix_fmt", "yuv420p",
+        "-c:a", "aac", "-shortest",
+        clip_output
+    ])
+    
+    subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    clips.append(clip_output)
+
+# 2. Concatenate all compiled clips together
+print("Menggabungkan semua klip panel komik...")
+with open("temp/concat.txt", "w") as f:
+    for c in clips:
+        f.write(f"file '{c}'\\n")
+
+cmd_concat = [
+    "ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", "temp/concat.txt"
+]
+
+# Background music mix (if any)
+if os.path.exists("soundtrack.mp3"):
+    cmd_concat.extend(["-i", "soundtrack.mp3", "-filter_complex", "[0:a][1:a]amix=inputs=2:duration=first[a]", "-map", "0:v", "-map", "[a]"])
+else:
+    cmd_concat.extend(["-c:a", "copy"])
+
+# Embed wrapped subtitles into the MP4 file
+cmd_concat.extend([
+    "-vf", "subtitles=subtitles.srt:force_style='FontName=Arial,FontSize=18,PrimaryColour=&HFFFFFF,OutlineColour=&H000000,Outline=2,Alignment=6'",
+    "-c:v", "libx264", "output_rendered.mp4"
+])
+
+subprocess.run(cmd_concat, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+# 3. Clean up temp files
+print("Membersihkan file sementara...")
+for c in clips:
+    try:
+        os.remove(c)
+    except Exception:
+        pass
+try:
+    os.remove("temp/concat.txt")
+    os.rmdir("temp")
+except Exception:
+    pass
+
+print("=== SUKSES! Video akhir Anda disimpan sebagai: output_rendered.mp4 ===")
+`;
+
+      zip.file("render.py", pythonScript);
+
+      // 6. Generate render.bat (one-click batch file for Windows)
+      const batScript = `@echo off
+echo ===================================================
+echo   PanelFlow AI: One-Click Offline Video Renderer
+echo ===================================================
+echo.
+echo Menjalankan proses rendering video melalui Python dan FFmpeg...
+python render.py
+if %errorlevel% neq 0 (
+    echo.
+    echo Terjadi kesalahan saat merender video.
+    echo Pastikan Python dan FFmpeg sudah terinstal dan ditambahkan ke PATH.
+)
+pause
+`;
+      zip.file("render.bat", batScript);
+
+      // 7. Add background music if available
+      if (project.settings.musicUrl) {
+        try {
+          const musicData = await fetch(project.settings.musicUrl).then(r => r.arrayBuffer());
+          zip.file("soundtrack.mp3", musicData);
+        } catch (e) {
+          console.warn("Failed to bundle background music in ZIP project:", e);
+        }
+      }
+
+      setExportProgress(95);
+
+      // Generate ZIP blob and download
+      const blob = await zip.generateAsync({ type: "blob" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${project.name.replace(/\s+/g, '_')}_FFmpeg_Project.zip`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+
+      if (failedAudioCount > 0) {
+        toast.warning(`Selesai dengan ${failedAudioCount} file audio yang gagal diunduh karena rate limit. Silakan ekspor kembali nanti jika ingin melengkapi.`, { duration: 8000 });
+      } else {
+        toast.success("FFmpeg Offline Project downloaded successfully!");
+        confetti({
+          particleCount: 150,
+          spread: 70,
+          origin: { y: 0.6 },
+          colors: ['#a855f7', '#ffffff', '#c084fc']
+        });
+      }
+
+    } catch (err: any) {
+      console.error("FFmpeg exporter failed:", err);
+      toast.error("Failed to compile FFmpeg Project ZIP: " + err.message);
+    } finally {
+      setIsProcessing(false);
+      setExportProgress(0);
+    }
+  };
+
   const playPreview = async () => {
     if (!currentChapter || currentChapter.panels.length === 0) return;
     setIsPlaying(true);
@@ -1349,7 +2238,9 @@ export default function App() {
         if (panel.script) {
           try {
             toast.info(`Generating audio for panel ${i + 1}...`);
-            const base64Audio = await generateSpeech(panel.script, project.settings.globalVoiceId);
+            const base64Audio = project.settings.voiceEngine === 'gemini'
+              ? await generateSpeech(panel.script, project.settings.globalVoiceId)
+              : await generateFreeSpeech(panel.script, project.settings.language);
             const binaryString = atob(base64Audio);
             const bytes = new Uint8Array(binaryString.length);
             for (let j = 0; j < binaryString.length; j++) {
@@ -1414,6 +2305,36 @@ export default function App() {
             </div>
           </div>
         )}
+
+        {scriptGenerationAbortController && (
+          <div className="fixed inset-0 z-[100] bg-background/80 backdrop-blur-md flex items-center justify-center p-6">
+            <div className="max-w-md w-full bg-card/60 backdrop-blur-2xl border border-border/50 rounded-3xl p-8 shadow-2xl flex flex-col items-center text-center gap-6">
+              <div className="relative">
+                <div className="w-16 h-16 rounded-full border-4 border-blue-500/20 border-t-blue-500 animate-spin" />
+                <Sparkles className="w-6 h-6 text-blue-400 absolute inset-0 m-auto animate-pulse" />
+              </div>
+              
+              <div className="space-y-2">
+                <h3 className="text-xl font-bold bg-gradient-to-r from-blue-400 to-indigo-400 bg-clip-text text-transparent">
+                  Menyusun Naskah Narasi AI...
+                </h3>
+                <p className="text-sm text-foreground/60">
+                  Gemini sedang menganalisis setiap panel komik dan menyusun skrip suara yang sinematik.
+                </p>
+              </div>
+
+              <Button 
+                variant="destructive"
+                onClick={() => {
+                  scriptGenerationAbortController.abort();
+                }}
+                className="w-full py-6 rounded-2xl font-bold flex items-center justify-center gap-2 transform active:scale-95 transition-all shadow-lg shadow-red-500/20"
+              >
+                <X className="w-5 h-5" /> Batal / Cancel
+              </Button>
+            </div>
+          </div>
+        )}
         
         {/* Navbar */}
         <nav className="border-b border-blue-500/10 bg-background/60 backdrop-blur-2xl sticky top-0 z-50 shadow-lg shadow-primary/10 border-b border-border/50">
@@ -1474,9 +2395,25 @@ export default function App() {
                 >
                   <FolderDown className="w-5 h-5" />
                 </Button>
-                <Button variant="ghost" size="icon" className="text-foreground/40 hover:text-foreground hover:bg-foreground/5 rounded-full">
+                <ModeToggle />
+                <Button 
+                  variant="ghost" 
+                  size="icon" 
+                  title="Settings"
+                  className="text-foreground/40 hover:text-foreground hover:bg-foreground/5 rounded-full"
+                  onClick={() => setIsSettingsDialogOpen(true)}
+                >
                   <Settings className="w-5 h-5" />
                 </Button>
+                {currentChapter && currentChapter.panels.length > 0 && (
+                  <Button
+                    onClick={handleDownloadFFmpegProject}
+                    disabled={isProcessing}
+                    className="bg-purple-600 hover:bg-purple-700 text-white font-bold px-6 h-11 rounded-2xl shadow-xl shadow-purple-500/20 transition-all hover:scale-[1.02] active:scale-[0.98] mr-2"
+                  >
+                    <Download className="w-4 h-4 mr-2" /> Download FFmpeg
+                  </Button>
+                )}
                 <Button
                   onClick={handleExportVideo}
                   disabled={isProcessing || !currentChapter || currentChapter.panels.some(p => !p.script.trim())}
@@ -1630,36 +2567,359 @@ export default function App() {
                   exit={{ opacity: 0, y: -20 }}
                   className="space-y-8"
                 >
-                  {/* Import Area */}
-                  <div className="animate-in fade-in zoom-in-95 duration-500 mb-12">
-                    <div 
-                      {...getRootProps()} 
-                      className={`
-                        border-2 border-dashed rounded-[2.5rem] p-12 flex flex-col items-center justify-center transition-all duration-700 relative overflow-hidden group
-                        ${isDragActive ? 'border-blue-600 bg-blue-600/5 scale-[0.98]' : 'border-border/50 bg-white/[0.02] hover:border-blue-500/20 hover:bg-white/[0.04]'}
-                      `}
-                    >
-                      <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[500px] h-[500px] bg-blue-600/5 blur-[120px] rounded-full opacity-0 group-hover:opacity-100 transition-opacity duration-1000" />
-                      <input {...getInputProps()} />
-                      <div className="flex items-center gap-6 relative z-10 w-full max-w-2xl mx-auto">
-                        <div className={`
-                          w-20 h-20 bg-white/[0.03] rounded-3xl flex items-center justify-center border border-border/50 transition-all duration-500 flex-shrink-0
-                          group-hover:scale-110 group-hover:rotate-6 group-hover:bg-blue-600 group-hover:border-blue-400/50 group-hover:shadow-2xl group-hover:shadow-blue-500/40
-                        `}>
-                          <Upload className={`w-8 h-8 transition-colors duration-500 ${isDragActive ? 'text-foreground' : 'text-foreground/40 group-hover:text-foreground'}`} />
-                        </div>
-                        <div className="flex-1 text-left">
-                          <h3 className="text-2xl font-black mb-1 text-foreground tracking-tight">Quick Import</h3>
-                          <p className="text-foreground/40 text-sm font-medium">
-                            Drag & Drop pages (<span className="text-foreground/60">PDF, images</span>) anywhere in this box. We'll handle the rest!
-                          </p>
-                        </div>
-                        <div className="flex-shrink-0">
-                          <Button className="bg-white text-black hover:bg-blue-50 px-8 h-12 rounded-2xl font-black text-[10px] uppercase tracking-[0.2em] shadow-xl transition-all hover:scale-105 active:scale-95">
-                            <Plus className="w-4 h-4 mr-2" /> Select Files
-                          </Button>
-                        </div>
+                  {/* Sequential Upload Wizard */}
+                  <div className="bg-background/40 border border-border/50 rounded-[2.5rem] p-8 shadow-xl shadow-primary/5 relative overflow-hidden backdrop-blur-md mb-8">
+                    {/* Stepper Header */}
+                    <div className="max-w-4xl mx-auto mb-8 relative">
+                      <div className="absolute top-1/2 left-0 right-0 h-0.5 bg-foreground/10 -translate-y-1/2 z-0" />
+                      <div 
+                        className="absolute top-1/2 left-0 h-0.5 bg-blue-600 -translate-y-1/2 z-0 transition-all duration-500" 
+                        style={{ 
+                          width: wizardTitleType === 'select'
+                            ? `${(((wizardStep === 1 ? 0 : wizardStep === 3 ? 1 : 2)) / 2) * 100}%`
+                            : `${((wizardStep - 1) / 3) * 100}%`
+                        }}
+                      />
+                      <div className="flex justify-between relative z-10">
+                        {((wizardTitleType === 'select'
+                          ? [
+                              { step: 1, label: 'Pilih Judul' },
+                              { step: 3, label: 'Create Chapter' },
+                              { step: 4, label: 'Upload Gambar' }
+                            ]
+                          : [
+                              { step: 1, label: 'Create Judul' },
+                              { step: 2, label: 'Pilih Jenis' },
+                              { step: 3, label: 'Create Chapter' },
+                              { step: 4, label: 'Upload Gambar' }
+                            ]
+                        ) as { step: number; label: string }[]).map((s) => (
+                          <div key={s.step} className="flex flex-col items-center gap-2">
+                            <div 
+                              className={`
+                                w-10 h-10 rounded-full flex items-center justify-center font-bold text-sm transition-all duration-500
+                                ${wizardStep === s.step 
+                                  ? 'bg-blue-600 text-white ring-4 ring-blue-500/20 scale-110 shadow-lg shadow-blue-500/30' 
+                                  : wizardStep > s.step 
+                                    ? 'bg-emerald-600 text-white' 
+                                    : 'bg-background border border-border text-foreground/45'}
+                              `}
+                            >
+                              {wizardStep > s.step ? <Check className="w-5 h-5 text-white" /> : s.step}
+                            </div>
+                            <span className={`text-[10px] font-black uppercase tracking-wider ${wizardStep >= s.step ? 'text-foreground' : 'text-foreground/30'}`}>
+                              {s.label}
+                            </span>
+                          </div>
+                        ))}
                       </div>
+                    </div>
+
+                    {/* Step Panels */}
+                    <div className="max-w-xl mx-auto">
+                      <AnimatePresence mode="wait">
+                        {wizardStep === 1 && (
+                          <motion.div
+                            key="step1"
+                            initial={{ opacity: 0, x: 20 }}
+                            animate={{ opacity: 1, x: 0 }}
+                            exit={{ opacity: 0, x: -20 }}
+                            transition={{ duration: 0.3 }}
+                            className="space-y-6"
+                          >
+                            <div className="text-center">
+                              <h3 className="text-xl font-black text-foreground tracking-tight">Step 1: Judul Comic</h3>
+                              <p className="text-xs text-foreground/40 mt-1 font-medium">Buat judul komik baru atau pilih judul yang sudah ada.</p>
+                            </div>
+
+                            <div className="grid grid-cols-2 gap-4">
+                              <Button
+                                type="button"
+                                variant={wizardTitleType === 'create' ? 'default' : 'outline'}
+                                onClick={() => setWizardTitleType('create')}
+                                className={`h-24 rounded-2xl flex flex-col gap-2 transition-all cursor-pointer ${wizardTitleType === 'create' ? 'bg-blue-600 text-white ring-2 ring-blue-400' : 'border-border bg-background/20 text-foreground/60'}`}
+                              >
+                                <Plus className="w-5 h-5" />
+                                <span className="font-bold text-xs uppercase tracking-wider">Judul Baru</span>
+                              </Button>
+                              <Button
+                                type="button"
+                                variant={wizardTitleType === 'select' ? 'default' : 'outline'}
+                                onClick={() => setWizardTitleType('select')}
+                                className={`h-24 rounded-2xl flex flex-col gap-2 transition-all cursor-pointer ${wizardTitleType === 'select' ? 'bg-blue-600 text-white ring-2 ring-blue-400' : 'border-border bg-background/20 text-foreground/60'}`}
+                              >
+                                <Library className="w-5 h-5" />
+                                <span className="font-bold text-xs uppercase tracking-wider">Judul Existing</span>
+                              </Button>
+                            </div>
+
+                            {wizardTitleType === 'create' ? (
+                              <div className="space-y-2">
+                                <label className="text-[10px] font-bold uppercase tracking-widest text-foreground/50">Nama Judul Baru</label>
+                                <input
+                                  type="text"
+                                  placeholder="Contoh: Solo Leveling"
+                                  value={wizardTitleName}
+                                  onChange={(e) => setWizardTitleName(e.target.value)}
+                                  className="w-full h-12 bg-background/40 border border-border/85 rounded-xl px-4 text-sm font-bold outline-none focus:ring-2 focus:ring-blue-500/50"
+                                />
+                              </div>
+                            ) : (
+                              <div className="space-y-2">
+                                <label className="text-[10px] font-bold uppercase tracking-widest text-foreground/50">Pilih Judul</label>
+                                <select
+                                  value={wizardTitleId}
+                                  onChange={(e) => setWizardTitleId(e.target.value)}
+                                  className="w-full h-12 bg-background/40 border border-border rounded-xl px-4 text-sm font-bold outline-none focus:ring-2 focus:ring-blue-500/50 text-foreground/80 cursor-pointer"
+                                >
+                                  <option value="">-- Pilih Judul Dari Library --</option>
+                                  {project.titles.map((t) => (
+                                    <option key={t.id} value={t.id}>{t.name}</option>
+                                  ))}
+                                </select>
+                              </div>
+                            )}
+
+                            <div className="flex justify-end pt-4">
+                              <Button
+                                onClick={() => {
+                                  if (wizardTitleType === 'create' && !wizardTitleName.trim()) {
+                                    toast.error("Silakan masukkan nama judul komik.");
+                                    return;
+                                  }
+                                  if (wizardTitleType === 'select' && !wizardTitleId) {
+                                    toast.error("Silakan pilih judul komik yang sudah ada.");
+                                    return;
+                                  }
+                                  if (wizardTitleType === 'select') {
+                                    const selectedTitle = project.titles.find(t => t.id === wizardTitleId);
+                                    if (selectedTitle) {
+                                      setWizardCategoryId(selectedTitle.categoryId);
+                                    }
+                                    setWizardStep(3); // Skip Step 2!
+                                  } else {
+                                    setWizardStep(2);
+                                  }
+                                }}
+                                className="bg-blue-600 hover:bg-blue-700 text-white font-bold h-11 px-8 rounded-xl text-xs uppercase tracking-wider cursor-pointer"
+                              >
+                                Lanjut
+                              </Button>
+                            </div>
+                          </motion.div>
+                        )}
+
+                        {wizardStep === 2 && (
+                          <motion.div
+                            key="step2"
+                            initial={{ opacity: 0, x: 20 }}
+                            animate={{ opacity: 1, x: 0 }}
+                            exit={{ opacity: 0, x: -20 }}
+                            transition={{ duration: 0.3 }}
+                            className="space-y-6"
+                          >
+                            <div className="text-center">
+                              <h3 className="text-xl font-black text-foreground tracking-tight">Step 2: Pilih Jenis Comic</h3>
+                              <p className="text-xs text-foreground/40 mt-1 font-medium">Tentukan format komik untuk proses snapping yang optimal.</p>
+                            </div>
+
+                            <div className="grid grid-cols-3 gap-4">
+                              {[
+                                { id: 'manga', name: 'Manga', desc: 'Japanese Style (Black & White, Right-to-Left)' },
+                                { id: 'manhwa', name: 'Manhwa', desc: 'Korean Webtoon (Color, Vertical Long Strip)' },
+                                { id: 'manhua', name: 'Manhua', desc: 'Chinese Comic (Color, High Detail Rows)' }
+                              ].map((cat) => (
+                                <button
+                                  key={cat.id}
+                                  type="button"
+                                  onClick={() => {
+                                    setWizardCategoryId(cat.id);
+                                    setWizardStep(3); // auto-advance to step 3 on click!
+                                  }}
+                                  className={`
+                                    p-4 rounded-2xl border-2 transition-all duration-300 flex flex-col items-center justify-center text-center gap-2 h-36 cursor-pointer
+                                    ${wizardCategoryId === cat.id 
+                                      ? 'bg-blue-600/10 border-blue-500 text-foreground ring-2 ring-blue-500/20' 
+                                      : 'bg-background/25 border-border/50 text-foreground/60 hover:bg-background/45 hover:border-blue-500/35'}
+                                  `}
+                                >
+                                  <span className="text-sm font-black uppercase tracking-tight">{cat.name}</span>
+                                  <span className="text-[8px] font-bold text-foreground/45 leading-relaxed uppercase">{cat.desc}</span>
+                                </button>
+                              ))}
+                            </div>
+
+                            <div className="flex justify-between pt-4">
+                              <Button
+                                variant="outline"
+                                onClick={() => setWizardStep(1)}
+                                className="border-border text-foreground/60 hover:text-foreground h-11 px-8 rounded-xl text-xs uppercase tracking-wider cursor-pointer"
+                              >
+                                Kembali
+                              </Button>
+                              <Button
+                                onClick={() => setWizardStep(3)}
+                                className="bg-blue-600 hover:bg-blue-700 text-white font-bold h-11 px-8 rounded-xl text-xs uppercase tracking-wider cursor-pointer"
+                              >
+                                Lanjut
+                              </Button>
+                            </div>
+                          </motion.div>
+                        )}
+
+                        {wizardStep === 3 && (
+                          <motion.div
+                            key="step3"
+                            initial={{ opacity: 0, x: 20 }}
+                            animate={{ opacity: 1, x: 0 }}
+                            exit={{ opacity: 0, x: -20 }}
+                            transition={{ duration: 0.3 }}
+                            className="space-y-6"
+                          >
+                            <div className="text-center">
+                              <h3 className="text-xl font-black text-foreground tracking-tight">Step 3: Create Chapter</h3>
+                              <p className="text-xs text-foreground/40 mt-1 font-medium">Buat nama chapter baru untuk mengelompokkan halaman komik.</p>
+                            </div>
+
+                            <div className="space-y-2">
+                              <label className="text-[10px] font-bold uppercase tracking-widest text-foreground/50">Nama Chapter</label>
+                              <input
+                                type="text"
+                                placeholder="Contoh: Chapter 01: Kebangkitan"
+                                value={wizardChapterName}
+                                onChange={(e) => setWizardChapterName(e.target.value)}
+                                className="w-full h-12 bg-background/40 border border-border/80 rounded-xl px-4 text-sm font-bold outline-none focus:ring-2 focus:ring-blue-500/50"
+                              />
+                            </div>
+
+                            <div className="flex justify-between pt-4">
+                              <Button
+                                variant="outline"
+                                onClick={() => {
+                                  if (wizardTitleType === 'select') {
+                                    setWizardStep(1);
+                                  } else {
+                                    setWizardStep(2);
+                                  }
+                                }}
+                                className="border-border text-foreground/60 hover:text-foreground h-11 px-8 rounded-xl text-xs uppercase tracking-wider cursor-pointer"
+                              >
+                                Kembali
+                              </Button>
+                              <Button
+                                onClick={() => {
+                                  if (!wizardChapterName.trim()) {
+                                    toast.error("Silakan masukkan nama chapter.");
+                                    return;
+                                  }
+                                  setWizardStep(4);
+                                }}
+                                className="bg-blue-600 hover:bg-blue-700 text-white font-bold h-11 px-8 rounded-xl text-xs uppercase tracking-wider cursor-pointer"
+                              >
+                                Lanjut
+                              </Button>
+                            </div>
+                          </motion.div>
+                        )}
+
+                        {wizardStep === 4 && (
+                          <motion.div
+                            key="step4"
+                            initial={{ opacity: 0, x: 20 }}
+                            animate={{ opacity: 1, x: 0 }}
+                            exit={{ opacity: 0, x: -20 }}
+                            transition={{ duration: 0.3 }}
+                            className="space-y-6"
+                          >
+                            <div className="text-center">
+                              <h3 className="text-xl font-black text-foreground tracking-tight">Step 4: Upload Gambar</h3>
+                              <p className="text-xs text-foreground/40 mt-1 font-medium">Unggah halaman-halaman komik untuk di-Auto Snap.</p>
+                            </div>
+
+                            {/* Drop Zone */}
+                            <div
+                              onDragOver={(e) => { e.preventDefault(); e.currentTarget.classList.add('border-blue-500', 'bg-blue-500/5'); }}
+                              onDragLeave={(e) => { e.currentTarget.classList.remove('border-blue-500', 'bg-blue-500/5'); }}
+                              onDrop={(e) => {
+                                e.preventDefault();
+                                e.currentTarget.classList.remove('border-blue-500', 'bg-blue-500/5');
+                                if (e.dataTransfer.files) {
+                                  const filesArray = Array.from(e.dataTransfer.files);
+                                  setWizardFiles(prev => [...prev, ...filesArray]);
+                                }
+                              }}
+                              className="border-2 border-dashed border-border/80 rounded-2xl p-8 flex flex-col items-center justify-center transition-all bg-white/[0.01] hover:bg-white/[0.02] text-center min-h-[160px] cursor-pointer"
+                            >
+                              <Upload className="w-8 h-8 text-foreground/30 mb-2" />
+                              <p className="text-xs text-foreground/60 font-bold uppercase tracking-wider mb-2">Drag & Drop Halaman Komik Di Sini</p>
+                              <p className="text-[10px] text-foreground/30 mb-4 uppercase tracking-widest font-mono">PNG, JPG, WEBP, atau PDF</p>
+                              
+                              <label className="bg-white text-black hover:bg-blue-50 px-5 h-8 rounded-lg font-bold text-[9px] uppercase tracking-wider shadow-md cursor-pointer flex items-center justify-center">
+                                Pilih File
+                                <input
+                                  type="file"
+                                  multiple
+                                  accept="image/*,application/pdf"
+                                  className="hidden"
+                                  onChange={(e) => {
+                                    if (e.target.files) {
+                                      setWizardFiles(prev => [...prev, ...Array.from(e.target.files!)]);
+                                    }
+                                  }}
+                                />
+                              </label>
+                            </div>
+
+                            {/* Files List Preview */}
+                            {wizardFiles.length > 0 && (
+                              <div className="max-h-40 overflow-y-auto bg-background/20 border border-border/40 rounded-xl p-3 space-y-2">
+                                <div className="flex justify-between items-center text-[10px] font-bold uppercase tracking-widest text-foreground/40 px-1 border-b border-border/30 pb-1.5 mb-1.5">
+                                  <span>Nama File ({wizardFiles.length})</span>
+                                  <button onClick={() => setWizardFiles([])} className="text-red-400 hover:text-red-300 uppercase tracking-widest text-[9px] cursor-pointer">Hapus Semua</button>
+                                </div>
+                                {wizardFiles.map((file, idx) => (
+                                  <div key={idx} className="flex justify-between items-center bg-background/40 p-2 rounded-lg border border-border/30 text-xs">
+                                    <span className="truncate font-bold text-foreground/80 max-w-[280px]">{file.name}</span>
+                                    <button
+                                      onClick={() => setWizardFiles(prev => prev.filter((_, i) => i !== idx))}
+                                      className="text-red-400/60 hover:text-red-400 p-1 cursor-pointer"
+                                    >
+                                      <Trash2 className="w-3.5 h-3.5" />
+                                    </button>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+
+                            <div className="flex justify-between pt-4">
+                              <Button
+                                variant="outline"
+                                onClick={() => setWizardStep(3)}
+                                className="border-border text-foreground/60 hover:text-foreground h-11 px-8 rounded-xl text-xs uppercase tracking-wider cursor-pointer"
+                              >
+                                Kembali
+                              </Button>
+                              <Button
+                                onClick={handleWizardFinish}
+                                disabled={isProcessing}
+                                className="bg-blue-600 hover:bg-blue-700 text-white font-black h-11 px-8 rounded-xl text-xs uppercase tracking-[0.15em] shadow-lg shadow-blue-500/20 cursor-pointer"
+                              >
+                                {isProcessing ? (
+                                  <div className="flex items-center gap-2">
+                                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                    <span>Memproses...</span>
+                                  </div>
+                                ) : (
+                                  <div className="flex items-center gap-2">
+                                    <Sparkles className="w-4 h-4" />
+                                    <span>Selesai & Auto Snap</span>
+                                  </div>
+                                )}
+                              </Button>
+                            </div>
+                          </motion.div>
+                        )}
+                      </AnimatePresence>
                     </div>
                   </div>
 
@@ -1671,6 +2931,25 @@ export default function App() {
                         onClick={() => {
                           setCurrentCategoryId(cat.id);
                           setCurrentTitleId(null);
+                        }}
+                        onDragOver={(e) => {
+                          e.preventDefault();
+                          e.currentTarget.classList.add('bg-blue-600/30', 'border-blue-500');
+                        }}
+                        onDragLeave={(e) => {
+                          e.currentTarget.classList.remove('bg-blue-600/30', 'border-blue-500');
+                        }}
+                        onDrop={(e) => {
+                          e.preventDefault();
+                          e.currentTarget.classList.remove('bg-blue-600/30', 'border-blue-500');
+                          try {
+                            const data = JSON.parse(e.dataTransfer.getData("application/json"));
+                            if (data && typeof data.pageIndex === 'number') {
+                              handlePageMoveToCategory(data.sourceChapterId, data.pageIndex, cat.id);
+                            }
+                          } catch (err) {
+                            console.error(err);
+                          }
                         }}
                         className={`
                           h-24 rounded-3xl border-2 transition-all flex flex-col gap-2
@@ -1740,6 +3019,25 @@ export default function App() {
                         {project.titles.filter(t => t.categoryId === currentCategoryId).map(title => (
                           <Card 
                             key={title.id}
+                            onDragOver={(e) => {
+                              e.preventDefault();
+                              e.currentTarget.classList.add('ring-2', 'ring-blue-500', 'border-blue-500');
+                            }}
+                            onDragLeave={(e) => {
+                              e.currentTarget.classList.remove('ring-2', 'ring-blue-500', 'border-blue-500');
+                            }}
+                            onDrop={(e) => {
+                              e.preventDefault();
+                              e.currentTarget.classList.remove('ring-2', 'ring-blue-500', 'border-blue-500');
+                              try {
+                                const data = JSON.parse(e.dataTransfer.getData("application/json"));
+                                if (data && typeof data.pageIndex === 'number') {
+                                  handlePageMoveToTitle(data.sourceChapterId, data.pageIndex, title.id);
+                                }
+                              } catch (err) {
+                                console.error(err);
+                              }
+                            }}
                             className={`
                               bg-background/40 border-purple-500/10 overflow-hidden transition-all group shadow-lg shadow-purple-900/10 relative cursor-pointer
                               ${currentTitleId === title.id ? 'ring-2 ring-blue-600 border-blue-600' : 'hover:bg-background/60 hover:border-blue-500/30'}
@@ -1838,6 +3136,16 @@ export default function App() {
                               <Square className="w-4 h-4" />
                             </Button>
                           </div>
+                          {selectedLibraryChapterIds.size > 1 && (
+                            <Button 
+                              onClick={handleMergeAndAutoSnap}
+                              disabled={isProcessing}
+                              className="bg-blue-600 hover:bg-blue-700 text-white font-bold tracking-widest text-[10px] uppercase h-10 px-4 rounded-xl mr-2"
+                            >
+                              <Sparkles className="w-4 h-4 mr-2" />
+                              Merge & Auto Snap ({selectedLibraryChapterIds.size})
+                            </Button>
+                          )}
                           {selectedLibraryChapterIds.size > 0 && (
                             <Button 
                               variant="destructive" 
@@ -2887,6 +4195,17 @@ export default function App() {
                       {isPlaying ? <Loader2 className="w-6 h-6 animate-spin mr-2" /> : <Play className="w-6 h-6 mr-2 fill-current" />}
                       {isPlaying ? 'Stop Preview' : 'Start Preview'}
                     </Button>
+                    {currentChapter && currentChapter.panels.length > 0 && (
+                      <Button 
+                        onClick={handleDownloadFFmpegProject}
+                        disabled={isProcessing}
+                        variant="secondary" 
+                        size="lg"
+                        className="h-16 px-8 rounded-full bg-purple-600/20 border border-purple-500/20 text-purple-300 hover:bg-purple-600/30 text-lg font-bold"
+                      >
+                        <Download className="w-6 h-6 mr-2" /> Download FFmpeg
+                      </Button>
+                    )}
                     <Button 
                       onClick={handleExportVideo}
                       disabled={isProcessing || !currentChapter || currentChapter.panels.some(p => !p.script.trim())}
@@ -2976,6 +4295,71 @@ export default function App() {
             </AnimatePresence>
           </Tabs>
         </main>
+
+        <Dialog open={isUploadOptionsDialogOpen} onOpenChange={setIsUploadOptionsDialogOpen}>
+          <DialogContent className="bg-background border-border text-foreground max-w-lg">
+            <DialogHeader>
+              <DialogTitle className="text-foreground">Upload Options</DialogTitle>
+              <p className="text-sm text-foreground/40">
+                You are uploading {pendingUploadFiles?.length} file(s). How would you like to process them?
+              </p>
+            </DialogHeader>
+            <div className="grid grid-cols-1 gap-4 py-4">
+              <Button 
+                variant="outline"
+                className="h-20 border-border bg-foreground/5 hover:bg-foreground/10 hover:border-blue-500/50 flex flex-col items-start p-4 text-left rounded-2xl gap-1 transition-all"
+                onClick={() => pendingUploadFiles && processUpload(pendingUploadFiles, 'combine')}
+              >
+                <div className="flex items-center gap-2 font-black text-sm uppercase tracking-wider text-blue-400">
+                  <FolderPlus className="w-4 h-4" />
+                  Combine into Single Chapter
+                </div>
+                <span className="text-xs text-foreground/50 font-normal">
+                  Creates one new chapter containing all uploaded images.
+                </span>
+              </Button>
+
+              {project.currentChapterId && (
+                <Button 
+                  variant="outline"
+                  className="h-20 border-border bg-foreground/5 hover:bg-foreground/10 hover:border-blue-500/50 flex flex-col items-start p-4 text-left rounded-2xl gap-1 transition-all"
+                  onClick={() => pendingUploadFiles && processUpload(pendingUploadFiles, 'append')}
+                >
+                  <div className="flex items-center gap-2 font-black text-sm uppercase tracking-wider text-green-400">
+                    <Plus className="w-4 h-4" />
+                    Append to Current Chapter
+                  </div>
+                  <span className="text-xs text-foreground/50 font-normal">
+                    Adds the new pages to the end of the currently active chapter: "
+                    {project.chapters.find(c => c.id === project.currentChapterId)?.name}"
+                  </span>
+                </Button>
+              )}
+
+              <Button 
+                variant="outline"
+                className="h-20 border-border bg-foreground/5 hover:bg-foreground/10 hover:border-blue-500/50 flex flex-col items-start p-4 text-left rounded-2xl gap-1 transition-all"
+                onClick={() => pendingUploadFiles && processUpload(pendingUploadFiles, 'separate')}
+              >
+                <div className="flex items-center gap-2 font-black text-sm uppercase tracking-wider text-purple-400">
+                  <Layers className="w-4 h-4" />
+                  Create Separate Chapters
+                </div>
+                <span className="text-xs text-foreground/50 font-normal">
+                  Creates a new chapter for each uploaded file (original behavior).
+                </span>
+              </Button>
+            </div>
+            <DialogFooter>
+              <Button variant="ghost" onClick={() => {
+                setIsUploadOptionsDialogOpen(false);
+                setPendingUploadFiles(null);
+              }}>
+                Cancel
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
 
         <Dialog open={isAddTitleDialogOpen} onOpenChange={setIsAddTitleDialogOpen}>
           <DialogContent className="bg-background border-border text-foreground max-w-md">
@@ -3209,6 +4593,172 @@ export default function App() {
             <DialogFooter>
               <Button onClick={() => setIsExtendDialogOpen(false)} className="bg-blue-600 text-foreground font-bold">
                 Done
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        <Dialog open={isSettingsDialogOpen} onOpenChange={setIsSettingsDialogOpen}>
+          <DialogContent className="bg-background border-border text-foreground max-w-2xl">
+            <DialogHeader>
+              <DialogTitle className="text-foreground text-xl font-black uppercase tracking-tight">Application Settings</DialogTitle>
+              <p className="text-xs text-foreground/40 font-medium">Configure all standards and engine requirements for PanelFlow.</p>
+            </DialogHeader>
+            
+            <div className="space-y-6 py-4 max-h-[70vh] overflow-y-auto pr-2">
+              {/* Gemini API Key */}
+              <div className="space-y-2">
+                <label className="text-[10px] font-bold uppercase tracking-[0.2em] text-foreground/50">Gemini API Key</label>
+                <input 
+                  type="password"
+                  placeholder="Masukkan Gemini API Key Anda"
+                  value={apiKeyInputVal}
+                  className="w-full bg-background/40 border border-border/50 rounded-xl p-4 text-xs font-mono outline-none focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500/50 text-foreground/80 transition-all placeholder:text-foreground/20"
+                  onChange={(e) => {
+                    setApiKeyInputVal(e.target.value);
+                    localStorage.setItem('panelflow_gemini_api_key', e.target.value);
+                    import('./services/gemini').then(m => m.setCustomGeminiApiKey(e.target.value));
+                  }}
+                />
+                <p className="text-[9px] text-foreground/30 font-medium leading-relaxed uppercase tracking-wider">
+                  Dibutuhkan untuk deteksi panel bertenaga AI. Dapatkan secara gratis di Google AI Studio.
+                </p>
+              </div>
+
+              {/* Speech Voice Engine */}
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <label className="text-[10px] font-bold uppercase tracking-[0.2em] text-foreground/50">Voice Synthesis Engine</label>
+                  <select 
+                    value={project.settings.voiceEngine || 'free'}
+                    onChange={(e) => setProject(prev => ({ 
+                      ...prev, 
+                      settings: { ...prev.settings, voiceEngine: e.target.value as any } 
+                    }))}
+                    className="w-full bg-background/40 border border-border/50 rounded-xl p-4 text-xs font-bold outline-none focus:ring-2 focus:ring-blue-500/50 text-foreground/80 cursor-pointer"
+                  >
+                    <option value="free">Free Engine (Google/Edge TTS - Unlimited)</option>
+                    <option value="gemini">Gemini AI Engine (Requires API Key)</option>
+                  </select>
+                </div>
+
+                <div className="space-y-2">
+                  <label className="text-[10px] font-bold uppercase tracking-[0.2em] text-foreground/50">Default Voice</label>
+                  <select 
+                    value={project.settings.globalVoiceId || 'Kore'}
+                    onChange={(e) => setProject(prev => ({ 
+                      ...prev, 
+                      settings: { ...prev.settings, globalVoiceId: e.target.value } 
+                    }))}
+                    className="w-full bg-background/40 border border-border/50 rounded-xl p-4 text-xs font-bold outline-none focus:ring-2 focus:ring-blue-500/50 text-foreground/80 cursor-pointer"
+                  >
+                    <option value="Kore">Kore (Standard Male)</option>
+                    <option value="Puck">Puck (Energetic Male)</option>
+                    <option value="Fenrir">Fenrir (Deep Voice)</option>
+                    <option value="Aoede">Aoede (Standard Female)</option>
+                    <option value="Charon">Charon (Whisper/Soft)</option>
+                  </select>
+                </div>
+              </div>
+
+              {/* Language & Script Length */}
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <label className="text-[10px] font-bold uppercase tracking-[0.2em] text-foreground/50">Default Narration Language</label>
+                  <select 
+                    value={project.settings.language || 'English'}
+                    onChange={(e) => setProject(prev => ({ 
+                      ...prev, 
+                      settings: { ...prev.settings, language: e.target.value } 
+                    }))}
+                    className="w-full bg-background/40 border border-border/50 rounded-xl p-4 text-xs font-bold outline-none focus:ring-2 focus:ring-blue-500/50 text-foreground/80 cursor-pointer"
+                  >
+                    <option value="English">English</option>
+                    <option value="Indonesian">Indonesian</option>
+                    <option value="Japanese">Japanese</option>
+                    <option value="Spanish">Spanish</option>
+                    <option value="Korean">Korean</option>
+                  </select>
+                </div>
+
+                <div className="space-y-2">
+                  <label className="text-[10px] font-bold uppercase tracking-[0.2em] text-foreground/50">Default Script Length</label>
+                  <select 
+                    value={project.settings.scriptLength || 'Normal'}
+                    onChange={(e) => setProject(prev => ({ 
+                      ...prev, 
+                      settings: { ...prev.settings, scriptLength: e.target.value as any } 
+                    }))}
+                    className="w-full bg-background/40 border border-border/50 rounded-xl p-4 text-xs font-bold outline-none focus:ring-2 focus:ring-blue-500/50 text-foreground/80 cursor-pointer"
+                  >
+                    <option value="Short">Short (1 Sentence Max)</option>
+                    <option value="Normal">Normal (1-3 Sentences)</option>
+                    <option value="Detailed">Detailed (4+ Sentences)</option>
+                  </select>
+                </div>
+              </div>
+
+              {/* Video Format & Resolution Standards */}
+              <div className="grid grid-cols-3 gap-4">
+                <div className="space-y-2">
+                  <label className="text-[10px] font-bold uppercase tracking-[0.2em] text-foreground/50">Video Layout</label>
+                  <select 
+                    value={project.settings.videoFormat || 'landscape'}
+                    onChange={(e) => setProject(prev => ({ 
+                      ...prev, 
+                      settings: { ...prev.settings, videoFormat: e.target.value as any } 
+                    }))}
+                    className="w-full bg-background/40 border border-border/50 rounded-xl p-4 text-xs font-bold outline-none focus:ring-2 focus:ring-blue-500/50 text-foreground/80 cursor-pointer"
+                  >
+                    <option value="landscape">Landscape (16:9)</option>
+                    <option value="vertical">Vertical (9:16)</option>
+                  </select>
+                </div>
+
+                <div className="space-y-2">
+                  <label className="text-[10px] font-bold uppercase tracking-[0.2em] text-foreground/50">Target Resolution</label>
+                  <select 
+                    value={project.settings.exportResolution || '1080p'}
+                    onChange={(e) => setProject(prev => ({ 
+                      ...prev, 
+                      settings: { ...prev.settings, exportResolution: e.target.value as any } 
+                    }))}
+                    className="w-full bg-background/40 border border-border/50 rounded-xl p-4 text-xs font-bold outline-none focus:ring-2 focus:ring-blue-500/50 text-foreground/80 cursor-pointer"
+                  >
+                    <option value="720p">HD (720p)</option>
+                    <option value="1080p">FHD (1080p)</option>
+                    <option value="4K">UHD (4K)</option>
+                  </select>
+                </div>
+
+                <div className="space-y-2">
+                  <label className="text-[10px] font-bold uppercase tracking-[0.2em] text-foreground/50">Export Quality</label>
+                  <select 
+                    value={project.settings.exportQuality || 'Medium'}
+                    onChange={(e) => setProject(prev => ({ 
+                      ...prev, 
+                      settings: { ...prev.settings, exportQuality: e.target.value as any } 
+                    }))}
+                    className="w-full bg-background/40 border border-border/50 rounded-xl p-4 text-xs font-bold outline-none focus:ring-2 focus:ring-blue-500/50 text-foreground/80 cursor-pointer"
+                  >
+                    <option value="Low">Low (Fast)</option>
+                    <option value="Medium">Medium (Balanced)</option>
+                    <option value="High">High (Cinematic)</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+
+            <DialogFooter>
+              <Button 
+                onClick={() => {
+                  setIsSettingsDialogOpen(false);
+                  saveDraft();
+                  toast.success("Pengaturan berhasil disimpan!");
+                }} 
+                className="bg-blue-600 hover:bg-blue-700 text-white font-bold h-11 px-8 rounded-xl uppercase tracking-wider text-xs"
+              >
+                Simpan & Tutup
               </Button>
             </DialogFooter>
           </DialogContent>

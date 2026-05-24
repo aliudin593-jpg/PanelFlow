@@ -215,3 +215,65 @@ export async function fileToBase64(file: File): Promise<string> {
     reader.readAsDataURL(file);
   });
 }
+
+export function isBlankImage(base64: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement('canvas');
+      canvas.width = 30;
+      canvas.height = 30;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) {
+        resolve(false);
+        return;
+      }
+      ctx.drawImage(img, 0, 0, 30, 30);
+      try {
+        const imgData = ctx.getImageData(0, 0, 30, 30);
+        const data = imgData.data;
+        let whitePixels = 0;
+        let blackPixels = 0;
+        const total = 30 * 30;
+
+        for (let i = 0; i < data.length; i += 4) {
+          const r = data[i];
+          const g = data[i+1];
+          const b = data[i+2];
+          const a = data[i+3];
+
+          if (a < 10) {
+            whitePixels++;
+            continue;
+          }
+
+          // Check if white or very light off-white
+          if (r > 240 && g > 240 && b > 240) {
+            whitePixels++;
+          }
+          // Check if black or very dark
+          else if (r < 25 && g < 25 && b < 25) {
+            blackPixels++;
+          }
+        }
+
+        const whiteRatio = whitePixels / total;
+        const blackRatio = blackPixels / total;
+
+        if (whiteRatio > 0.95 || blackRatio > 0.95) {
+          resolve(true);
+        } else {
+          resolve(false);
+        }
+      } catch (err) {
+        console.error("Error reading image data in isBlankImage:", err);
+        resolve(false);
+      }
+    };
+    img.onerror = () => {
+      resolve(false);
+    };
+    img.src = base64;
+  });
+}
+

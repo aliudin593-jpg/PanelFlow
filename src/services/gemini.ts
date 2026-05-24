@@ -15,7 +15,8 @@ export async function generatePanelScripts(
   panels: { id: string; imageUrl: string; dialogue?: string; context?: string; scriptLength?: string }[], 
   language: string = 'English',
   globalContext: string = '',
-  globalScriptLength: string = 'Normal'
+  globalScriptLength: string = 'Normal',
+  signal?: AbortSignal
 ) {
   if (!panels.length) return [];
 
@@ -45,6 +46,10 @@ export async function generatePanelScripts(
   let allResults: { id: string; script: string }[] = [];
 
   for (const chunk of chunks) {
+    if (signal?.aborted) {
+      throw new DOMException("Aborted", "AbortError");
+    }
+
     // Await downscaling concurrently for the chunk
     const optimizedChunk = await Promise.all(chunk.map(async p => {
       const optimizedData = await downscaleForAI(p.imageUrl, 768);
@@ -68,7 +73,7 @@ export async function generatePanelScripts(
 
     await withRetry(async () => {
       try {
-        const response = await getGenAI().models.generateContent({
+        const response = await (getGenAI().models.generateContent as any)({
           model: "gemini-3-flash-preview",
           contents: [{ role: 'user', parts }],
           config: {
@@ -85,7 +90,7 @@ export async function generatePanelScripts(
               }
             }
           }
-        });
+        }, { signal });
 
         const text = response.text;
         if (text) {
@@ -292,6 +297,10 @@ export function downscaleForAI(base64: string, maxWidth: number = 1024, maxHeigh
       if (ctx) ctx.drawImage(img, 0, 0, width, height);
       resolve(canvas.toDataURL('image/jpeg', 0.8)); // Using JPEG 80% for speed
     };
+    img.onerror = (err) => {
+      console.warn("Failed to load image in downscaleForAI, returning original source:", err);
+      resolve(base64); // Safe fallback to bypass hanging
+    };
     img.src = base64;
   });
 }
@@ -303,17 +312,24 @@ export async function detectPanels(pageImageUrl: string) {
   const optimizedImage = await downscaleForAI(pageImageUrl, 1024, 6000);
 
   const prompt = `
-    Analyze this comic/webtoon page and identify the bounding boxes of ALL active characters, main visual figures, and character portraits/faces.
+    Analyze this comic/webtoon page and identify the bounding boxes of ALL active characters, story scenes, character portraits/faces, and action panels.
     
-    CRITICAL FOCUS GUIDELINES (CHARACTER ONLY):
-    1. Your primary goal is to focus snug and tight ONLY on the characters (people, figures, creatures), their physical bodies, action poses, and facial expressions.
-    2. DO NOT capture general empty spaces, backgrounds, wide scenic views, or the entire outer rectangular frames of comic panels if they contain large empty gaps. Shrink the bounding box so that it tightly wraps around the characters' physical silhouettes (torso, head, or close-up facial view).
-    3. If a panel contains multiple characters, you should generate either a single snug box that tightly encloses them together, or distinct snug boxes focusing on individual characters to highlight their gestures and expressions clearly in the video.
-    4. Exclude all solid black/white empty gutters, surrounding margin frames, blank spaces, speech bubbles with no characters next to them, and template dividers.
-    5. The resulting boxes must be tightly locked onto the character action to make the resulting animated video super engaging. You must output at least one bounding box. Never return an empty array.
+    CRITICAL FOCUS GUIDELINES (CHARACTER & SCENE FOCUS):
+    1. Your primary goal is to focus on capturing actual illustrations of characters (people, figures, creatures, portraits, facial expressions, action poses) or key story scenes/scenic details.
+    2. The bounding boxes should enclose the characters or the scenes. Do NOT capture general empty spaces, blank gutters, or margins.
+    3. If a panel shows an entire scene (with or without characters), capture the scene box but ensure all surrounding text balloons/bubbles are left outside or cropped out.
+    4. Exclude all solid black/white empty gutters, surrounding margin frames, blank spaces, and template dividers.
+    
+    SPEECH BUBBLE & DIALOGUE EXCLUSION PROTOCOL (CRITICAL):
+    1. You must NEVER draw a bounding box around a speech bubble, dialogue balloon, conversation text box, or sound effects text.
+    2. HINDARI pengambilan gambar pada teks percakapan / balon dialog! Cukup pahami teks percakapannya untuk konteks, tetapi jangan jadikan balon dialog sebagai panel terpisah!
+    3. Bounding box harus memotong keluar (crop out) balon teks tersebut atau hanya fokus pada karakter / scene di sebelahnya. Balon teks yang berada di atas gambar harus dilewati atau dipotong keluar agar video yang dihasilkan bersih dari balon teks percakapan.
+    
+    BLANK PANEL EXCLUSION PROTOCOL (CRITICAL):
+    1. HINDARI panel kosong (blank panel). Jangan pernah membuat bounding box pada area kosong yang seluruhnya berwarna putih atau hitam (blank spaces / solid gutters / empty panels).
     
     WATERMARK & LOGO EXCLUSION PROTOCOL (CRITICAL):
-    1. Learn to accurately differentiate between actual illustrated comic panels and watermarks/logos/site stamps.
+    1. Learn to accurately differentiate between actual illustrated comic panels/scenes and watermarks/logos/site stamps.
     2. Watermarks, translator/scanlation brand names (e.g., circular badges, scanning logos), site domains (e.g., text URLs like "asuracans.com", "mangadex.org"), and credit/notice texts are NOT comic panels. You MUST exclude them entirely.
     3. NEVER include a bounding box that is just a watermark, brand watermark, logo, or credit stamp.
     4. If a watermark or website logo/text falls near the edges or boundaries of a real illustrated comic group, shrink or adjust that panel's bounding box coordinates to completely crop it out. The final panel crop must contain only the pure comic artwork, with all watermarks and site logos completely removed.

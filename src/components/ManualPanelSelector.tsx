@@ -2,7 +2,9 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Button } from '@/components/ui/button';
 import { Separator } from '@/components/ui/separator';
-import { Scissors, Check, X, Plus, ZoomIn, ZoomOut, Maximize, Move, ArrowsUpFromLine } from 'lucide-react';
+import { Scissors, Check, X, Plus, ZoomIn, ZoomOut, Maximize, Move, ArrowsUpFromLine, Sparkles, Loader2 } from 'lucide-react';
+import { detectPanels } from '../services/gemini';
+import { cropImage, isBlankImage } from '../services/imageProcessing';
 
 interface Rect {
   x: number;
@@ -34,8 +36,64 @@ export function ManualPanelSelector({ images, initialPageIndex = 0, initialRects
   const [lastMousePos, setLastMousePos] = useState({ x: 0, y: 0 });
   const [fitMode, setFitMode] = useState<'screen' | 'width' | 'height'>('width');
   
+  const [isSnapping, setIsSnapping] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
   const imgRef = useRef<HTMLImageElement>(null);
+
+  const handleAISnapCurrentPage = async () => {
+    setIsSnapping(true);
+    try {
+      const pageBase64 = images[currentPageIndex];
+      let detectedRects = await detectPanels(pageBase64);
+      
+      // Filter out noise
+      detectedRects = detectedRects.filter((r: {width: number, height: number}) => {
+        const area = (r.width * r.height) / 10000;
+        const aspectRatio = r.width / r.height;
+        return area > 0.05 && aspectRatio > 0.05 && aspectRatio < 20;
+      });
+
+      if (detectedRects.length === 0) {
+        alert("AI did not find any panels on this page. Try manual selection.");
+        return;
+      }
+
+      // Sort Manga-style (top-to-bottom, right-to-left)
+      detectedRects.sort((a: any, b: any) => {
+        const yDiff = Math.abs(a.y - b.y);
+        const rowThreshold = Math.min(a.height, b.height) * 0.4;
+        if (yDiff < rowThreshold) {
+          return b.x - a.x;
+        }
+        return a.y - b.y;
+      });
+
+      const newRects = [];
+      for (const r of detectedRects) {
+        const cropped = await cropImage(pageBase64, r, false);
+        if (cropped) {
+          const isBlank = await isBlankImage(cropped);
+          if (isBlank) {
+            console.log("Filtered blank panel in manual panel selector snap:", r);
+            continue;
+          }
+        }
+        newRects.push({
+          x: r.x,
+          y: r.y,
+          width: r.width,
+          height: r.height
+        });
+      }
+
+      setCurrentPageRects(newRects);
+    } catch (err: any) {
+      console.error(err);
+      alert("AI Snapping failed: " + err.message);
+    } finally {
+      setIsSnapping(false);
+    }
+  };
 
   useEffect(() => {
     const existing = allRects.find(r => r.pageIndex === currentPageIndex);
@@ -374,6 +432,24 @@ export function ManualPanelSelector({ images, initialPageIndex = 0, initialRects
           </Button>
           
           <div className="flex items-center gap-4">
+            <Button
+              onClick={handleAISnapCurrentPage}
+              disabled={isSnapping}
+              className="bg-purple-600 hover:bg-purple-700 text-white h-10 px-5 font-black uppercase tracking-[0.2em] text-[9px] rounded-xl flex items-center gap-2 shadow-xl shadow-purple-500/20"
+            >
+              {isSnapping ? (
+                <>
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  Snapping...
+                </>
+              ) : (
+                <>
+                  <Sparkles className="w-3.5 h-3.5 text-purple-200" />
+                  AI Snap Page
+                </>
+              )}
+            </Button>
+
             <div className="hidden sm:flex items-center gap-2 px-3 py-1.5 bg-blue-600/5 rounded-xl border border-blue-500/10">
               <div className="w-1.5 h-1.5 bg-blue-500 rounded-full animate-pulse" />
               <span className="text-[9px] font-mono font-bold text-blue-400/80 uppercase tracking-[0.2em]">

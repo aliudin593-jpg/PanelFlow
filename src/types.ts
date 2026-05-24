@@ -65,5 +65,6 @@ export interface Project {
     exportQuality: 'Low' | 'Medium' | 'High';
     scriptLength?: 'Short' | 'Normal' | 'Detailed';
     videoFormat?: 'landscape' | 'vertical';
+    voiceEngine?: 'free' | 'gemini';
   };
 }
