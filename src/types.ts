@@ -14,6 +14,8 @@ export interface Panel {
   backgroundElements?: string[]; // URLs or IDs
   order: number;
   scriptLength?: 'Short' | 'Normal' | 'Detailed';
+  audio?: string; // Cached base64 TTS audio track
+  audioIsFallbackSilence?: boolean; // True if audio is a silent fallback
 }
 
 export type CategoryType = 'Manga' | 'Manhwa' | 'Manhua';

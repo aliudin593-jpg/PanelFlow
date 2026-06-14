@@ -74,7 +74,7 @@ export async function generatePanelScripts(
     await withRetry(async () => {
       try {
         const response = await (getGenAI().models.generateContent as any)({
-          model: "gemini-3-flash-preview",
+          model: "gemini-2.5-flash",
           contents: [{ role: 'user', parts }],
           config: {
             responseMimeType: "application/json",
@@ -223,7 +223,7 @@ export async function generateSpeech(text: string, voice: string = 'Kore'): Prom
   return withRetry(async () => {
     try {
       const response = await getGenAI().models.generateContent({
-        model: "gemini-3.1-flash-tts-preview",
+        model: "gemini-2.5-flash-preview-tts",
         contents: [{ parts: [{ text: `Say naturally: ${text}` }] }],
         config: {
           responseModalities: ["AUDIO"],
@@ -312,18 +312,20 @@ export async function detectPanels(pageImageUrl: string) {
   const optimizedImage = await downscaleForAI(pageImageUrl, 1024, 6000);
 
   const prompt = `
-    Analyze this comic/webtoon page and identify the bounding boxes of ALL active characters, story scenes, character portraits/faces, and action panels.
+    Analyze this comic/webtoon page and identify the bounding boxes of the entire illustrated panels (illustrations/frames).
     
-    CRITICAL FOCUS GUIDELINES (CHARACTER & SCENE FOCUS):
-    1. Your primary goal is to focus on capturing actual illustrations of characters (people, figures, creatures, portraits, facial expressions, action poses) or key story scenes/scenic details.
-    2. The bounding boxes should enclose the characters or the scenes. Do NOT capture general empty spaces, blank gutters, or margins.
-    3. If a panel shows an entire scene (with or without characters), capture the scene box but ensure all surrounding text balloons/bubbles are left outside or cropped out.
-    4. Exclude all solid black/white empty gutters, surrounding margin frames, blank spaces, and template dividers.
+    CRITICAL FOCUS GUIDELINES (COMPLETE ILLUSTRATED PANEL FRAMES):
+    1. Your primary goal is to detect the outer boundaries of each unique, individual illustrated panel frame/box in its entirety as drawn by the artist.
+    2. NEVER create multiple sub-crops inside a single panel frame (e.g. do NOT draw a box around just a character's face, face close-up, body, or object if it is already part of a larger drawn panel). Each drawn panel/scene on the page must be captured as a single, complete bounding box.
+    3. Do NOT slice characters' bodies, heads, or limbs in half. The entire character, their figure, pose, background, and all illustrated visual content of that panel frame must be fully contained within its bounding box. If a single character's body is split across multiple adjacent panels (a common webtoon technique), MERGE them and create ONE single large bounding box that encompasses the entire character across those panels, ignoring the gaps between them.
+    4. The bounding box coordinates must align precisely with the outer edges/borders of the illustrated panel box.
+    5. Exclude empty page margins, blank gutters, and solid divider lines between panels.
+    6. For vertical webtoons or scrolling strips, identify each distinct, sequential illustration block/scene as a single complete panel.
     
-    SPEECH BUBBLE & DIALOGUE EXCLUSION PROTOCOL (CRITICAL):
-    1. You must NEVER draw a bounding box around a speech bubble, dialogue balloon, conversation text box, or sound effects text.
-    2. HINDARI pengambilan gambar pada teks percakapan / balon dialog! Cukup pahami teks percakapannya untuk konteks, tetapi jangan jadikan balon dialog sebagai panel terpisah!
-    3. Bounding box harus memotong keluar (crop out) balon teks tersebut atau hanya fokus pada karakter / scene di sebelahnya. Balon teks yang berada di atas gambar harus dilewati atau dipotong keluar agar video yang dihasilkan bersih dari balon teks percakapan.
+    SPEECH BUBBLE & DIALOGUE EXCLUSION PROTOCOL (ABSENT/CROPPED OUT):
+    1. You must NEVER include a speech bubble, dialogue balloon, conversation text box, narrative caption, or sound effect text in any bounding box.
+    2. HINDARI balon percakapan / balon dialog secara total! Jangan pernah mengambil balon teks atau percakapan. Balon dialog harus dipotong keluar (cropped out) atau dilewati sepenuhnya.
+    3. Bounding box harus memotong keluar (crop out) balon teks tersebut atau hanya fokus pada karakter / wajah / item di sebelahnya. Jika ada balon percakapan yang tumpang tindih dengan karakter, sesuaikan koordinat kotak agar balon teks terpotong keluar, menyisakan hanya wajah, karakter, atau item yang bersih dari teks percakapan. FOKUS UTAMA ADALAH CHARACTER-NYA!
     
     BLANK PANEL EXCLUSION PROTOCOL (CRITICAL):
     1. HINDARI panel kosong (blank panel). Jangan pernah membuat bounding box pada area kosong yang seluruhnya berwarna putih atau hitam (blank spaces / solid gutters / empty panels).
@@ -342,7 +344,7 @@ export async function detectPanels(pageImageUrl: string) {
   return withRetry(async () => {
     try {
       const response = await getGenAI().models.generateContent({
-        model: "gemini-3-flash-preview",
+        model: "gemini-2.5-flash",
         contents: [{
           role: 'user',
           parts: [

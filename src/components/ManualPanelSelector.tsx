@@ -12,17 +12,20 @@ interface Rect {
   width: number;
   height: number;
   id?: string; // Preserve panel ID
+  label?: string; // Add global panel label
 }
 
 interface ManualPanelSelectorProps {
   images: string[];
   initialPageIndex?: number;
   initialRects?: { pageIndex: number; rects: Rect[] }[];
-  onComplete: (rectsByPage: { pageIndex: number; rects: Rect[] }[]) => void;
+  onComplete: (rectsByPage: { pageIndex: number; rects: Rect[] }[], lastPageIndex: number) => void;
   onCancel: () => void;
+  panelNumber?: number;
+  globalStartNumber?: number;
 }
 
-export function ManualPanelSelector({ images, initialPageIndex = 0, initialRects = [], onComplete, onCancel }: ManualPanelSelectorProps) {
+export function ManualPanelSelector({ images, initialPageIndex = 0, initialRects = [], onComplete, onCancel, panelNumber, globalStartNumber }: ManualPanelSelectorProps) {
   const [currentPageIndex, setCurrentPageIndex] = useState(initialPageIndex);
   const [allRects, setAllRects] = useState<{ pageIndex: number; rects: Rect[] }[]>(initialRects);
   const [currentPageRects, setCurrentPageRects] = useState<Rect[]>([]);
@@ -31,14 +34,31 @@ export function ManualPanelSelector({ images, initialPageIndex = 0, initialRects
   const [isPanning, setIsPanning] = useState(false);
   const [resizingIndex, setResizingIndex] = useState<number | null>(null);
   const [resizeHandle, setResizeHandle] = useState<string | null>(null);
-  const [zoom, setZoom] = useState(1);
+  const [zoom, setZoom] = useState(0.3);
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const [lastMousePos, setLastMousePos] = useState({ x: 0, y: 0 });
   const [fitMode, setFitMode] = useState<'screen' | 'width' | 'height'>('width');
   
   const [isSnapping, setIsSnapping] = useState(false);
+  const [snappingIndex, setSnappingIndex] = useState<number | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const imgRef = useRef<HTMLImageElement>(null);
+
+  const getGlobalStartNumberForPage = (pageIdx: number) => {
+    if (images.length === 1 && globalStartNumber) {
+      return globalStartNumber;
+    }
+    let count = 0;
+    for (let p = 0; p < pageIdx; p++) {
+      const pageData = allRects.find(r => r.pageIndex === p);
+      if (pageData) {
+        count += pageData.rects.length;
+      }
+    }
+    return count + 1;
+  };
+
+  const pageStartNumber = getGlobalStartNumberForPage(currentPageIndex);
 
   const handleAISnapCurrentPage = async () => {
     setIsSnapping(true);
@@ -95,10 +115,63 @@ export function ManualPanelSelector({ images, initialPageIndex = 0, initialRects
     }
   };
 
+  const handleAISnapSinglePanel = async (index: number) => {
+    setSnappingIndex(index);
+    try {
+      const pageBase64 = images[currentPageIndex];
+      const targetRect = currentPageRects[index];
+      
+      // We crop the image first with a margin to give AI context
+      const margin = 50;
+      const paddedRect = {
+        x: Math.max(0, targetRect.x - margin),
+        y: Math.max(0, targetRect.y - margin),
+        width: Math.min(1000 - Math.max(0, targetRect.x - margin), targetRect.width + margin * 2),
+        height: Math.min(1000 - Math.max(0, targetRect.y - margin), targetRect.height + margin * 2)
+      };
+
+      const croppedBase64 = await cropImage(pageBase64, paddedRect, false);
+      if (!croppedBase64) {
+        throw new Error("Failed to crop image for AI.");
+      }
+
+      const detectedRects = await detectPanels(croppedBase64);
+      if (detectedRects.length === 0) {
+        alert("AI did not detect any panels inside this crop. Try expanding the box slightly.");
+        return;
+      }
+
+      // Take the largest detected panel
+      const bestRect = detectedRects.sort((a: any, b: any) => (b.width * b.height) - (a.width * a.height))[0];
+
+      // Convert cropped relative coords back to global coords
+      const newGlobalRect = {
+        x: paddedRect.x + (bestRect.x / 1000) * paddedRect.width,
+        y: paddedRect.y + (bestRect.y / 1000) * paddedRect.height,
+        width: (bestRect.width / 1000) * paddedRect.width,
+        height: (bestRect.height / 1000) * paddedRect.height,
+      };
+
+      setCurrentPageRects(prev => {
+        const next = [...prev];
+        next[index] = {
+          ...next[index],
+          ...newGlobalRect
+        };
+        return next;
+      });
+    } catch (err: any) {
+      console.error(err);
+      alert("AI Snapping failed: " + err.message);
+    } finally {
+      setSnappingIndex(null);
+    }
+  };
+
   useEffect(() => {
     const existing = allRects.find(r => r.pageIndex === currentPageIndex);
     setCurrentPageRects(existing ? existing.rects : []);
-    setZoom(1);
+    setZoom(0.3);
     setPan({ x: 0, y: 0 });
   }, [currentPageIndex, allRects]);
 
@@ -115,7 +188,7 @@ export function ManualPanelSelector({ images, initialPageIndex = 0, initialRects
       setCurrentPageIndex(currentPageIndex + 1);
     } else {
       const finalRects = allRects.filter(r => r.pageIndex !== currentPageIndex);
-      onComplete([...finalRects, { pageIndex: currentPageIndex, rects: currentPageRects }]);
+      onComplete([...finalRects, { pageIndex: currentPageIndex, rects: currentPageRects }], currentPageIndex);
     }
   };
 
@@ -124,6 +197,11 @@ export function ManualPanelSelector({ images, initialPageIndex = 0, initialRects
     if (currentPageIndex > 0) {
       setCurrentPageIndex(currentPageIndex - 1);
     }
+  };
+
+  const handleFinish = () => {
+    const finalRects = allRects.filter(r => r.pageIndex !== currentPageIndex);
+    onComplete([...finalRects, { pageIndex: currentPageIndex, rects: currentPageRects }], currentPageIndex);
   };
 
   const getNormalizedCoords = (e: React.MouseEvent | MouseEvent) => {
@@ -297,7 +375,7 @@ export function ManualPanelSelector({ images, initialPageIndex = 0, initialRects
         onMouseUp={handleMouseUp}
         onMouseLeave={handleMouseUp}
         onContextMenu={(e) => e.preventDefault()}
-        style={{ cursor: isPanning ? 'grabbing' : (resizingIndex !== null ? 'nwse-resize' : 'crosshair') }}
+        style={{ cursor: isPanning ? 'grabbing' : (resizingIndex !== null ? (resizeHandle === 'ne' || resizeHandle === 'sw' ? 'nesw-resize' : 'nwse-resize') : 'crosshair') }}
       >
         <div 
           className="absolute inset-0 flex items-center justify-center pointer-events-none"
@@ -317,34 +395,73 @@ export function ManualPanelSelector({ images, initialPageIndex = 0, initialRects
               alt="Comic Page"
             />
             
-            {currentPageRects.map((rect, i) => (
-              <div 
-                key={i}
-                className="absolute border-2 border-blue-500 bg-blue-500/20 group z-10"
-                style={{
-                  left: `${rect.x / 10}%`,
-                  top: `${rect.y / 10}%`,
-                  width: `${rect.width / 10}%`,
-                  height: `${rect.height / 10}%`
-                }}
-              >
-                <div className="absolute -top-3 -left-3 w-6 h-6 bg-blue-600 rounded-full flex items-center justify-center text-[10px] font-bold text-white shadow-lg scale-75 origin-top-left">
-                  {i + 1}
-                </div>
+            {currentPageRects.map((rect, i) => {
+              const currentNum = pageStartNumber + i;
+              const isTargetPanel = panelNumber && currentNum === panelNumber;
+              return (
+                <div 
+                  key={i}
+                  className={`absolute border-2 group z-10 transition-all ${isTargetPanel ? 'border-amber-400 bg-amber-500/10 ring-4 ring-amber-500/25 shadow-[0_0_30px_rgba(245,158,11,0.4)] animate-pulse' : 'border-blue-500 bg-blue-500/20'}`}
+                  style={{
+                    left: `${rect.x / 10}%`,
+                    top: `${rect.y / 10}%`,
+                    width: `${rect.width / 10}%`,
+                    height: `${rect.height / 10}%`
+                  }}
+                >
+                  <div 
+                    onMouseDown={(e) => e.stopPropagation()}
+                    onDoubleClick={(e) => {
+                      e.stopPropagation();
+                      const newNumStr = window.prompt(`Enter new panel number for this panel (Current: ${currentNum}):`, currentNum.toString());
+                      if (!newNumStr) return;
+                      const newNum = parseInt(newNumStr);
+                      if (isNaN(newNum)) return;
+                      
+                      const targetIndex = newNum - pageStartNumber;
+                      if (targetIndex >= 0 && targetIndex < currentPageRects.length && targetIndex !== i) {
+                        setCurrentPageRects(prev => {
+                          const next = [...prev];
+                          const [moved] = next.splice(i, 1);
+                          next.splice(targetIndex, 0, moved);
+                          return next;
+                        });
+                      } else {
+                        alert(`Invalid panel number. For this page, please enter a number between ${pageStartNumber} and ${pageStartNumber + currentPageRects.length - 1}.`);
+                      }
+                    }}
+                    title="Double-click to change panel number/order"
+                    className={`absolute -top-10 -left-2 min-w-8 h-8 px-2 rounded-full flex items-center justify-center text-xs font-bold text-white shadow-lg origin-bottom-left transition-all cursor-pointer hover:scale-110 ${isTargetPanel ? 'bg-amber-500 border border-amber-300 shadow-amber-500/30' : 'bg-blue-600 shadow-blue-500/20'}`}
+                    style={{ transform: `scale(${Math.max(0.3, Math.min(2.5, 1 / zoom))})`, zIndex: 30 }}
+                  >
+                    {rect.label || currentNum} {isTargetPanel && "★ TARGET"}
+                  </div>
                 
-                <div data-index={i} data-handle="nw" className="absolute -top-1.5 -left-1.5 w-4 h-4 bg-white border-2 border-blue-500 rounded-sm cursor-nw-resize z-20 transition-opacity" />
-                <div data-index={i} data-handle="ne" className="absolute -top-1.5 -right-1.5 w-4 h-4 bg-white border-2 border-blue-500 rounded-sm cursor-ne-resize z-20 transition-opacity" />
-                <div data-index={i} data-handle="sw" className="absolute -bottom-1.5 -left-1.5 w-4 h-4 bg-white border-2 border-blue-500 rounded-sm cursor-sw-resize z-20 transition-opacity" />
-                <div data-index={i} data-handle="se" className="absolute -bottom-1.5 -right-1.5 w-4 h-4 bg-white border-2 border-blue-500 rounded-sm cursor-se-resize z-20 transition-opacity" />
+                <div data-index={i} data-handle="nw" className="absolute -top-3 -left-3 w-6 h-6 bg-white border-[3px] border-blue-500 rounded-sm cursor-nw-resize z-20 transition-opacity shadow-md" />
+                <div data-index={i} data-handle="ne" className="absolute -top-3 -right-3 w-6 h-6 bg-white border-[3px] border-blue-500 rounded-sm cursor-ne-resize z-20 transition-opacity shadow-md" />
+                <div data-index={i} data-handle="sw" className="absolute -bottom-3 -left-3 w-6 h-6 bg-white border-[3px] border-blue-500 rounded-sm cursor-sw-resize z-20 transition-opacity shadow-md" />
+                <div data-index={i} data-handle="se" className="absolute -bottom-3 -right-3 w-6 h-6 bg-white border-[3px] border-blue-500 rounded-sm cursor-se-resize z-20 transition-opacity shadow-md" />
                 
                 <button 
+                  onMouseDown={(e) => e.stopPropagation()}
                   onClick={(e) => { e.stopPropagation(); removeRect(i); }}
-                  className="absolute top-1 right-1 w-6 h-6 bg-red-500 rounded-full flex items-center justify-center text-white opacity-60 group-hover:opacity-100 transition-opacity shadow-lg hover:bg-red-600"
+                  className="absolute top-1 right-1 w-6 h-6 bg-red-500 rounded-full flex items-center justify-center text-white opacity-60 group-hover:opacity-100 transition-opacity shadow-lg hover:bg-red-600 z-30"
+                  title="Delete Panel"
                 >
                   <X className="w-4 h-4" />
                 </button>
+                <button 
+                  onMouseDown={(e) => e.stopPropagation()}
+                  onClick={(e) => { e.stopPropagation(); handleAISnapSinglePanel(i); }}
+                  disabled={snappingIndex !== null}
+                  className="absolute top-1 right-8 w-6 h-6 bg-indigo-500 rounded-full flex items-center justify-center text-white opacity-60 group-hover:opacity-100 transition-opacity shadow-lg hover:bg-indigo-600 z-30 disabled:opacity-50"
+                  title="Auto Snap this panel"
+                >
+                  {snappingIndex === i ? <Loader2 className="w-3 h-3 animate-spin" /> : <Sparkles className="w-3.5 h-3.5" />}
+                </button>
               </div>
-            ))}
+              );
+            })}
 
             {currentRect && (
               <div 
@@ -369,7 +486,7 @@ export function ManualPanelSelector({ images, initialPageIndex = 0, initialRects
               <Scissors className="text-white w-5 h-5" />
             </div>
             <div className="min-w-0">
-              <h3 className="text-sm font-black text-white truncate tracking-tight">Page {currentPageIndex + 1}/{images.length}</h3>
+              <h3 className="text-sm font-black text-white truncate tracking-tight">{images.length === 1 ? (panelNumber ? `Re-Snap Panel #${String(panelNumber).padStart(2, '0')}` : 'Re-Snap Panel') : `Page ${currentPageIndex + 1}/${images.length}`}</h3>
               <span className="text-[8px] font-mono font-bold text-blue-400/60 uppercase tracking-[0.2em]">Manual Snap</span>
             </div>
           </div>
@@ -458,19 +575,29 @@ export function ManualPanelSelector({ images, initialPageIndex = 0, initialRects
             </div>
 
             <div className="flex bg-white/[0.05] rounded-xl border border-white/5 p-1 gap-1 backdrop-blur-md">
-              <Button 
-                variant="ghost" 
-                disabled={currentPageIndex === 0}
-                onClick={handlePrev}
-                className="text-white/60 hover:text-white hover:bg-white/5 h-10 px-6 font-black uppercase tracking-[0.15em] text-[9px] rounded-lg transition-all disabled:opacity-20"
-              >
-                Prev
-              </Button>
+              {images.length > 1 && (
+                <Button 
+                  variant="ghost" 
+                  disabled={currentPageIndex === 0}
+                  onClick={handlePrev}
+                  className="text-white/60 hover:text-white hover:bg-white/5 h-10 px-6 font-black uppercase tracking-[0.15em] text-[9px] rounded-lg transition-all disabled:opacity-20 mr-1"
+                >
+                  Prev
+                </Button>
+              )}
+              {images.length > 1 && currentPageIndex < images.length - 1 && (
+                <Button 
+                  onClick={handleFinish}
+                  className="bg-emerald-600 hover:bg-emerald-700 text-white h-10 px-6 font-black uppercase tracking-[0.15em] text-[9px] rounded-lg transition-all hover:scale-[1.02] active:scale-[0.98] mr-1"
+                >
+                  Save & Exit
+                </Button>
+              )}
               <Button 
                 onClick={handleNext}
                 className="bg-blue-600 hover:bg-blue-700 text-white h-10 px-8 font-black uppercase tracking-[0.2em] text-[9px] rounded-lg shadow-xl shadow-blue-500/40 transition-all hover:scale-[1.02] active:scale-[0.98]"
               >
-                {currentPageIndex === images.length - 1 ? 'Finish' : 'Next'}
+                {images.length === 1 ? 'OK' : (currentPageIndex === images.length - 1 ? 'Finish' : 'Finish & Next')}
               </Button>
             </div>
           </div>

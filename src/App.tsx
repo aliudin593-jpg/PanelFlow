@@ -43,7 +43,9 @@ import {
   Smartphone,
   Video,
   FolderDown,
-  FolderUp
+  FolderUp,
+  Monitor,
+  Eye
 } from 'lucide-react';
 import { useDropzone } from 'react-dropzone';
 import { toast, Toaster } from 'sonner';
@@ -51,6 +53,12 @@ import confetti from 'canvas-confetti';
 
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Separator } from '@/components/ui/separator';
@@ -254,6 +262,9 @@ export default function App() {
   const [activeTab, setActiveTab] = useState('upload');
   const [isProcessing, setIsProcessing] = useState(false);
   const [currentPanelIndex, setCurrentPanelIndex] = useState(-1);
+  const [previewImage, setPreviewImage] = useState<string | null>(null);
+  const [chapterLastPageIndex, setChapterLastPageIndex] = useState<Record<string, number>>({});
+  const [startPageSelection, setStartPageSelection] = useState<{ chapter: ComicChapter; lastIndex: number } | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const isPlayingRef = useRef(false);
   const [isExtendDialogOpen, setIsExtendDialogOpen] = useState(false);
@@ -261,7 +272,7 @@ export default function App() {
   const [scriptGenerationAbortController, setScriptGenerationAbortController] = useState<AbortController | null>(null);
   const [apiKeyInputVal, setApiKeyInputVal] = useState(localStorage.getItem('panelflow_gemini_api_key') || '');
   const [editingPanelId, setEditingPanelId] = useState<string | null>(null);
-  const [manualSelectionData, setManualSelectionData] = useState<{ chapterId: string; pageUrls: string[]; initialPageIndex: number; appendMode?: boolean; singlePanelMode?: boolean; initialRects?: {pageIndex: number, rects: any[]}[] } | null>(null);
+  const [manualSelectionData, setManualSelectionData] = useState<{ chapterId: string; pageUrls: string[]; initialPageIndex: number; appendMode?: boolean; singlePanelMode?: boolean; panelNumber?: number; globalStartNumber?: number; initialRects?: {pageIndex: number, rects: any[]}[] } | null>(null);
   const [isManualSelectorOpen, setIsManualSelectorOpen] = useState(false);
   const [isAddTitleDialogOpen, setIsAddTitleDialogOpen] = useState(false);
   const [isRenameChapterDialogOpen, setIsRenameChapterDialogOpen] = useState(false);
@@ -278,6 +289,7 @@ export default function App() {
   const [exportProgress, setExportProgress] = useState(0);
   const [pendingUploadFiles, setPendingUploadFiles] = useState<File[] | null>(null);
   const [isUploadOptionsDialogOpen, setIsUploadOptionsDialogOpen] = useState(false);
+  const [autoSnapAfterUpload, setAutoSnapAfterUpload] = useState(true);
   const [expandedChapterIds, setExpandedChapterIds] = useState<Set<string>>(new Set());
 
   // Wizard States
@@ -564,11 +576,26 @@ export default function App() {
 
   const processChapter = async (chapter: ComicChapter, mode: 'auto' | 'manual') => {
     if (mode === 'manual') {
+      if (chapter.pages.length > 1) {
+        setStartPageSelection({
+          chapter,
+          lastIndex: chapterLastPageIndex[chapter.id] || 0
+        });
+        return;
+      }
+      
       const initialRects = chapter.pages.map((pageUrl, pageIndex) => ({
         pageIndex,
         rects: chapter.panels
           .filter(p => p.fullPageUrl === pageUrl)
-          .map(p => ({ ...p.rect, id: p.id }))
+          .map(p => {
+            const globalIndex = chapter.panels.findIndex(cp => cp.id === p.id);
+            return {
+              ...p.rect,
+              id: p.id,
+              label: globalIndex !== -1 ? String(globalIndex + 1) : undefined
+            };
+          })
       }));
 
       setManualSelectionData({ 
@@ -582,7 +609,9 @@ export default function App() {
     }
 
     setIsProcessing(true);
+    toast.info(`Starting Auto Snap for chapter "${chapter.name}"...`);
     try {
+      let runningPanelCount = 0;
       const pageResults = [];
       for (let index = 0; index < chapter.pages.length; index++) {
         const pageBase64 = chapter.pages[index];
@@ -631,6 +660,7 @@ export default function App() {
                 console.log("Filtered out blank panel crop at rect:", rect);
                 continue;
               }
+              runningPanelCount++;
               panels.push({
                 id: generateId(),
                 imageUrl: cropped,
@@ -645,6 +675,11 @@ export default function App() {
             }
           }
           pageResults.push({ index, panels });
+          if (panels.length > 0) {
+            toast.info(`Page ${index + 1}/${chapter.pages.length}: Auto Snapped panels #${runningPanelCount - panels.length + 1} to #${runningPanelCount}`);
+          } else {
+            toast.info(`Page ${index + 1}/${chapter.pages.length}: No panels detected.`);
+          }
         } catch (err) {
           console.error(`Failed detecting panels for page ${index}:`, err);
           pageResults.push({ index, panels: [] }); // Graceful degradation for failed pages
@@ -765,34 +800,7 @@ export default function App() {
             </div>
           </div>
           <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-all transform translate-x-2 group-hover:translate-x-0">
-            {chapter.panels.length === 0 ? (
-              <>
-                <Button 
-                  variant="ghost"
-                  size="sm"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    processChapter(chapter, 'auto');
-                  }}
-                  disabled={isProcessing}
-                  className="h-7 px-3 bg-blue-600/20 text-blue-400 hover:text-foreground hover:bg-blue-600 rounded-full text-[9px] font-bold uppercase tracking-widest mr-2"
-                >
-                  Auto Snap
-                </Button>
-                <Button 
-                  variant="ghost"
-                  size="sm"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    processChapter(chapter, 'manual');
-                  }}
-                  disabled={isProcessing}
-                  className="h-7 px-3 bg-foreground/5 text-foreground/60 hover:text-foreground hover:bg-foreground/20 rounded-full text-[9px] font-bold uppercase tracking-widest mr-2"
-                >
-                  Manual Snap
-                </Button>
-              </>
-            ) : (
+            {chapter.panels.length > 0 && (
               <Button 
                 variant="ghost"
                 size="sm"
@@ -806,6 +814,31 @@ export default function App() {
                 Open
               </Button>
             )}
+            <Button 
+              variant="ghost"
+              size="sm"
+              onClick={(e) => {
+                e.stopPropagation();
+                if (chapter.panels.length > 0 && !window.confirm("Auto Snap will overwrite existing panels. Are you sure?")) return;
+                processChapter(chapter, 'auto');
+              }}
+              disabled={isProcessing}
+              className="h-7 px-3 bg-blue-600/20 text-blue-400 hover:text-foreground hover:bg-blue-600 rounded-full text-[9px] font-bold uppercase tracking-widest mr-2"
+            >
+              Auto Snap
+            </Button>
+            <Button 
+              variant="ghost"
+              size="sm"
+              onClick={(e) => {
+                e.stopPropagation();
+                processChapter(chapter, 'manual');
+              }}
+              disabled={isProcessing}
+              className="h-7 px-3 bg-foreground/5 text-foreground/60 hover:text-foreground hover:bg-foreground/20 rounded-full text-[9px] font-bold uppercase tracking-widest mr-2"
+            >
+              Manual Snap
+            </Button>
             <Button 
               variant="ghost" 
               size="icon" 
@@ -876,9 +909,21 @@ export default function App() {
                   className="relative w-16 h-24 bg-background border border-border/80 rounded-lg overflow-hidden cursor-grab active:cursor-grabbing hover:border-blue-500/50 transition-all group/page shadow-md"
                 >
                   <img src={pageUrl} className="w-full h-full object-cover" />
-                  <div className="absolute inset-0 bg-black/50 flex flex-col items-center justify-center opacity-0 group-hover/page:opacity-100 transition-opacity p-1 text-center">
+                  <div className="absolute inset-0 bg-black/55 flex flex-col items-center justify-center opacity-0 group-hover/page:opacity-100 transition-opacity p-1 text-center gap-1">
                     <span className="text-[9px] font-bold text-white uppercase tracking-wider">Page {index + 1}</span>
-                    <span className="text-[7px] text-white/60 mt-0.5">Drag to move</span>
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      className="h-6 w-12 text-[8px] font-bold rounded bg-blue-600 hover:bg-blue-700 text-white border-0 shadow-sm p-0 flex items-center justify-center gap-0.5 cursor-pointer z-10"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setPreviewImage(pageUrl);
+                      }}
+                      onMouseDown={(e) => e.stopPropagation()}
+                    >
+                      <Eye className="w-3 h-3" /> Preview
+                    </Button>
+                    <span className="text-[6px] text-white/50">Drag to move</span>
                   </div>
                 </div>
               </div>
@@ -1056,18 +1101,23 @@ export default function App() {
           }
         }
 
+        const activeChapter = project.chapters.find(c => c.id === project.currentChapterId)!;
+        const updatedChapter = { ...activeChapter, pages: [...activeChapter.pages, ...newPages] };
+
         setProject(prev => ({
           ...prev,
           categories: cats,
           titles: titles,
           chapters: prev.chapters.map(c => 
-            c.id === prev.currentChapterId 
-              ? { ...c, pages: [...c.pages, ...newPages] } 
-              : c
+            c.id === prev.currentChapterId ? updatedChapter : c
           )
         }));
 
         toast.success(`Appended ${newPages.length} pages to the current chapter!`);
+
+        if (autoSnapAfterUpload) {
+          await processChapter(updatedChapter, 'auto');
+        }
       } else if (mode === 'combine') {
         const combinedPages: string[] = [];
         for (const file of files) {
@@ -1100,6 +1150,10 @@ export default function App() {
         }));
 
         toast.success(`Created chapter "${chapterName}" with ${combinedPages.length} pages!`);
+
+        if (autoSnapAfterUpload) {
+          await processChapter(newChapter, 'auto');
+        }
       } else {
         const newPending: ComicChapter[] = [];
         for (const file of files) {
@@ -1130,6 +1184,12 @@ export default function App() {
         }));
 
         toast.success(`Created ${files.length} separate chapters!`);
+
+        if (autoSnapAfterUpload) {
+          for (const chap of newPending) {
+            await processChapter(chap, 'auto');
+          }
+        }
       }
     } catch (error: any) {
       console.error("Upload process error:", error);
@@ -1169,8 +1229,9 @@ export default function App() {
     });
   };
 
-  const handleManualSelectionComplete = async (rectsByPage: { pageIndex: number; rects: { x: number; y: number; width: number; height: number, id?: string }[] }[]) => {
+  const handleManualSelectionComplete = async (rectsByPage: { pageIndex: number; rects: { x: number; y: number; width: number; height: number, id?: string }[] }[], lastPageIndex: number) => {
     if (!manualSelectionData) return;
+    setChapterLastPageIndex(prev => ({ ...prev, [manualSelectionData.chapterId]: lastPageIndex }));
     setIsProcessing(true);
     try {
       const existingChapter = project.chapters.find(c => c.id === manualSelectionData.chapterId);
@@ -1228,6 +1289,7 @@ export default function App() {
       // Existing chapter update
       setProject(prev => ({
         ...prev,
+        currentChapterId: manualSelectionData.chapterId,
         chapters: prev.chapters.map(c => {
           if (c.id === manualSelectionData.chapterId) {
             let updatedPanels;
@@ -1259,12 +1321,15 @@ export default function App() {
       
       if (manualSelectionData.appendMode) {
           toast.success(`Added new panels manually!`);
+      } else if (manualSelectionData.singlePanelMode && manualSelectionData.panelNumber) {
+          toast.success(`Re-snapped Panel #${String(manualSelectionData.panelNumber).padStart(2, '0')} layout updated! Script and audio preserved.`);
       } else {
           toast.success(`Updated layout! Script and audio preserved.`);
       }
 
       setIsManualSelectorOpen(false);
       setManualSelectionData(null);
+      setActiveTab('edit');
     } catch (error: any) {
       toast.error("Failed to process manual selection: " + error.message);
     } finally {
@@ -1307,7 +1372,7 @@ export default function App() {
               panels: c.panels.map(p => {
                 // Try to find by ID first, then by index if necessary (though service should return IDs)
                 const scriptObj = scripts.find((s: any) => s.id === p.id);
-                return scriptObj ? { ...p, script: scriptObj.script } : p;
+                return scriptObj ? { ...p, script: scriptObj.script, audio: undefined } : p;
               })
             };
           }
@@ -1394,7 +1459,7 @@ export default function App() {
               ...c,
               panels: c.panels.map(p => {
                 const scriptObj = scripts.find((s: any) => s.id === p.id);
-                return scriptObj ? { ...p, script: scriptObj.script } : p;
+                return scriptObj ? { ...p, script: scriptObj.script, audio: undefined } : p;
               })
             };
           }
@@ -1425,41 +1490,43 @@ export default function App() {
       return;
     }
     
+    // Create AudioContext immediately to preserve user gesture
+    const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
+    try {
+      await audioCtx.resume();
+    } catch (e) {
+      console.warn("Failed to resume AudioContext early:", e);
+    }
+
+    const { success, updatedChapter } = await ensureAllAudiosGenerated(currentChapter);
+    if (!success) {
+      toast.error("Failed to generate narration audio.");
+      return;
+    }
+
     setIsProcessing(true);
     setExportProgress(0);
-    toast.info("Generating narration audio... This may take a moment.");
+    toast.info("Mixing audio and rendering video...");
 
     try {
-      // Create AudioContext immediately to preserve user gesture
-      const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
-      await audioCtx.resume();
       const dest = audioCtx.createMediaStreamDestination();
 
-      // 1. Pre-generate all audio sequentially to avoid hitting rate limits
+      // 1. Load all pre-generated audio tracks into audioDataMap
       const audioDataMap = new Map<string, ArrayBuffer>();
-      const totalPanels = currentChapter.panels.length;
+      const totalPanels = updatedChapter.panels.length;
       
-      for (let i = 0; i < currentChapter.panels.length; i++) {
-        const panel = currentChapter.panels[i];
-        if (panel.script) {
+      for (let i = 0; i < updatedChapter.panels.length; i++) {
+        const panel = updatedChapter.panels[i];
+        if (panel.script && panel.audio) {
           try {
-            // Generating sequentially
-            const base64Audio = project.settings.voiceEngine === 'gemini'
-              ? await generateSpeech(panel.script, project.settings.globalVoiceId)
-              : await generateFreeSpeech(panel.script, project.settings.language);
-            const binaryString = atob(base64Audio);
+            const binaryString = atob(panel.audio);
             const bytes = new Uint8Array(binaryString.length);
             for (let j = 0; j < binaryString.length; j++) {
               bytes[j] = binaryString.charCodeAt(j);
             }
             audioDataMap.set(panel.id, bytes.buffer);
           } catch (e: any) {
-            console.error(`Failed to generate audio for panel ${panel.id}:`, e);
-            if (e?.message?.includes('429') || e?.message?.includes('RESOURCE_EXHAUSTED')) {
-                toast.error("API Quota Exhausted. Stopping export. Please wait a few minutes before trying again.", { duration: 5000 });
-                setIsProcessing(false);
-                return;
-            }
+            console.error(`Failed to parse audio for panel ${panel.id}:`, e);
           }
         }
         setExportProgress(Math.round(((i + 1) / totalPanels) * 40));
@@ -1889,6 +1956,160 @@ export default function App() {
       setIsProcessing(false);
       setExportProgress(0);
     }
+  };  const getAudioExtension = (base64: string): 'wav' | 'mp3' => {
+    return 'mp3';
+  };
+
+  const generateSilence = (duration: number = 2.0): string => {
+    const sampleRate = 16000;
+    const numChannels = 1;
+    const bitsPerSample = 16;
+    const numSamples = sampleRate * duration;
+    const dataSize = numSamples * (bitsPerSample / 8);
+    const chunkSize = 36 + dataSize;
+    const buffer = new ArrayBuffer(44 + dataSize);
+    const view = new DataView(buffer);
+
+    const writeString = (offset: number, string: string) => {
+      for (let i = 0; i < string.length; i++) {
+        view.setUint8(offset + i, string.charCodeAt(i));
+      }
+    };
+
+    writeString(0, 'RIFF');
+    view.setUint32(4, chunkSize, true);
+    writeString(8, 'WAVE');
+    writeString(12, 'fmt ');
+    view.setUint32(16, 16, true);
+    view.setUint16(20, 1, true);
+    view.setUint16(22, numChannels, true);
+    view.setUint32(24, sampleRate, true);
+    view.setUint32(28, sampleRate * numChannels * (bitsPerSample / 8), true);
+    view.setUint16(32, numChannels * (bitsPerSample / 8), true);
+    view.setUint16(34, bitsPerSample, true);
+    writeString(36, 'data');
+    view.setUint32(40, dataSize, true);
+
+    const bytes = new Uint8Array(buffer);
+    let binary = '';
+    const len = bytes.byteLength;
+    const chunkSizeLimit = 8192;
+    for (let i = 0; i < len; i += chunkSizeLimit) {
+      binary += String.fromCharCode.apply(null, Array.from(bytes.slice(i, i + chunkSizeLimit)));
+    }
+    return btoa(binary);
+  };
+
+  const ensureAllAudiosGenerated = async (chapter: ComicChapter): Promise<{ success: boolean; updatedChapter: ComicChapter }> => {
+    const missingAudioPanels = chapter.panels.filter(p => !p.audio || p.audioIsFallbackSilence);
+
+    if (missingAudioPanels.length === 0) {
+      return { success: true, updatedChapter: chapter };
+    }
+
+    setIsProcessing(true);
+    setExportProgress(0);
+    toast.info(`Generating ${missingAudioPanels.length} missing audio tracks...`);
+
+    let completedCount = 0;
+    const isGemini = project.settings.voiceEngine === 'gemini';
+    const newPanels = [...chapter.panels];
+
+    for (let i = 0; i < newPanels.length; i++) {
+      const panel = newPanels[i];
+      if (panel.audio && !panel.audioIsFallbackSilence) {
+        continue;
+      }
+
+      // If the panel has no script, immediately generate a silent track offline!
+      if (!panel.script?.trim()) {
+        const silentAudio = generateSilence(panel.duration || 2.0);
+        newPanels[i] = { ...panel, audio: silentAudio, audioIsFallbackSilence: false };
+        completedCount++;
+        setExportProgress(Math.round((completedCount / missingAudioPanels.length) * 100));
+        continue;
+      }
+
+      let base64Audio = '';
+      let success = false;
+      let retries = 3;
+      let delay = isGemini ? 2000 : 800;
+
+      for (let attempt = 0; attempt < retries; attempt++) {
+        try {
+          base64Audio = isGemini
+            ? await generateSpeech(panel.script, project.settings.globalVoiceId)
+            : await generateFreeSpeech(panel.script, project.settings.language);
+          
+          if (base64Audio) {
+            success = true;
+            break;
+          }
+        } catch (err: any) {
+          console.warn(`Panel ${i + 1} TTS attempt ${attempt + 1} failed:`, err);
+          
+          if (isGemini) {
+            try {
+              console.info(`Attempting transparent fallback to free voice engine for panel ${i + 1}...`);
+              base64Audio = await generateFreeSpeech(panel.script, project.settings.language);
+              if (base64Audio) {
+                success = true;
+                break;
+              }
+            } catch (fallbackErr) {
+              console.warn(`Transparent fallback to free voice engine failed for panel ${i + 1}:`, fallbackErr);
+            }
+          }
+
+          const isRateLimit = err?.status === 429 || err?.message?.includes('429') || err?.message?.includes('RESOURCE_EXHAUSTED');
+          if (attempt < retries - 1) {
+            const currentDelay = isRateLimit ? delay * 2 : delay;
+            await new Promise(resolve => setTimeout(resolve, currentDelay));
+            delay *= 2;
+          }
+        }
+      }
+
+      completedCount++;
+      setExportProgress(Math.round((completedCount / missingAudioPanels.length) * 100));
+
+      if (success && base64Audio) {
+        newPanels[i] = { ...panel, audio: base64Audio, audioIsFallbackSilence: false };
+      } else {
+        // Fallback to silence if generation fails completely so we always have a track
+        console.error(`Failed to generate audio for panel ${i + 1}. Falling back to silence.`);
+        toast.warning(`Panel ${i + 1}: Gagal membuat suara (API limit/koneksi). Menggunakan keheningan sementara.`, { duration: 5000 });
+        const silentAudio = generateSilence(panel.duration || 2.0);
+        newPanels[i] = { ...panel, audio: silentAudio, audioIsFallbackSilence: true };
+      }
+
+      // Add a safe gap between requests to avoid rate limits
+      if (i < newPanels.length - 1) {
+        const gap = isGemini ? 1000 : 500;
+        await new Promise(resolve => setTimeout(resolve, gap));
+      }
+    }
+
+    const updatedChapter = { ...chapter, panels: newPanels };
+    
+    // Functional state update to completely avoid stale captures
+    setProject(prev => {
+      const newProj = {
+        ...prev,
+        chapters: prev.chapters.map(c => c.id === chapter.id ? updatedChapter : c)
+      };
+      saveProjectToDB(newProj);
+      return newProj;
+    });
+
+    // Staging delay to wait for state
+    await new Promise(resolve => setTimeout(resolve, 100));
+
+    setIsProcessing(false);
+    setExportProgress(0);
+
+    toast.success("All audio tracks generated successfully!");
+    return { success: true, updatedChapter };
   };
 
   const handleDownloadFFmpegProject = async () => {
@@ -1896,10 +2117,12 @@ export default function App() {
       toast.error("No panels to export. Please add some panels first.");
       return;
     }
-    
+
+    const { updatedChapter } = await ensureAllAudiosGenerated(currentChapter);
+
     setIsProcessing(true);
     setExportProgress(0);
-    toast.info("Generating Free TTS voice tracks for FFmpeg Offline project...");
+    toast.info("Compiling FFmpeg Project ZIP...");
 
     try {
       const JSZip = (await import('jszip')).default;
@@ -1912,11 +2135,10 @@ export default function App() {
       const renderPyPanels: any[] = [];
       
       let totalElapsedMs = 0;
-      let failedAudioCount = 0;
-      const totalPanels = currentChapter.panels.length;
+      const totalPanels = updatedChapter.panels.length;
       
-      for (let i = 0; i < currentChapter.panels.length; i++) {
-        const panel = currentChapter.panels[i];
+      for (let i = 0; i < updatedChapter.panels.length; i++) {
+        const panel = updatedChapter.panels[i];
         
         // 1. Save panel image to panels/panel_001.png
         const imageBase64 = panel.imageUrl;
@@ -1924,66 +2146,32 @@ export default function App() {
         const panelFilename = `panel_${String(i + 1).padStart(3, '0')}.png`;
         panelsFolder?.file(panelFilename, imgData, { base64: true });
 
-        // 2. Generate free TTS voice track with delay & retries
+        // 2. Load cached TTS voice track
         let duration = 3.0; // fallback duration
-        const audioFilename = `audio_${String(i + 1).padStart(3, '0')}.mp3`;
+        const ext = panel.audio ? getAudioExtension(panel.audio) : 'mp3';
+        const audioFilename = `audio_${String(i + 1).padStart(3, '0')}.${ext}`;
         
-        if (panel.script) {
-          // Introduce a sequential delay of 1200ms between consecutive calls to avoid rate limits
-          if (i > 0) {
-            await new Promise(resolve => setTimeout(resolve, 1200));
-          }
-          
-          let base64Audio = '';
-          let success = false;
-          let retries = 3;
-          let delay = 1500;
-          
-          for (let attempt = 0; attempt < retries; attempt++) {
-            try {
-              base64Audio = project.settings.voiceEngine === 'gemini'
-                ? await generateSpeech(panel.script, project.settings.globalVoiceId)
-                : await generateFreeSpeech(panel.script, project.settings.language);
-              
-              if (base64Audio) {
-                success = true;
-                break;
-              }
-            } catch (e: any) {
-              console.warn(`Attempt ${attempt + 1} failed for panel ${i + 1} TTS:`, e);
-              if (attempt < retries - 1) {
-                await new Promise(resolve => setTimeout(resolve, delay));
-                delay *= 2; // exponential backoff
-              }
+        if (panel.audio) {
+          try {
+            const binaryString = atob(panel.audio);
+            const bytes = new Uint8Array(binaryString.length);
+            for (let j = 0; j < binaryString.length; j++) {
+              bytes[j] = binaryString.charCodeAt(j);
             }
-          }
-          
-          if (success && base64Audio) {
-            try {
-              const binaryString = atob(base64Audio);
-              const bytes = new Uint8Array(binaryString.length);
-              for (let j = 0; j < binaryString.length; j++) {
-                bytes[j] = binaryString.charCodeAt(j);
-              }
-              
-              audioFolder?.file(audioFilename, bytes.buffer);
+            
+            audioFolder?.file(audioFilename, bytes);
 
-              // Get duration of the MP3 file by decoding it locally in browser AudioContext!
-              const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
-              const decoded = await audioCtx.decodeAudioData(bytes.buffer.slice(0));
-              duration = decoded.duration / project.settings.globalSpeed;
-              await audioCtx.close();
-            } catch (err) {
-              console.error(`Error decoding audio data for panel ${i + 1}:`, err);
-              // Fallback duration based on words
-              duration = Math.max(3.0, (panel.script.split(/\s+/).length * 0.4));
-            }
-          } else {
-            console.error(`Skipping TTS audio for panel ${i + 1} after all retry failures.`);
-            failedAudioCount++;
-            // Fallback duration based on words
-            duration = Math.max(3.0, (panel.script.split(/\s+/).length * 0.4));
+            // Get duration of the cached file locally!
+            const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
+            const decoded = await audioCtx.decodeAudioData(bytes.buffer.slice(0));
+            duration = decoded.duration / project.settings.globalSpeed;
+            await audioCtx.close();
+          } catch (err) {
+            console.error(`Error decoding audio data for panel ${i + 1}:`, err);
+            duration = panel.duration || 2.0;
           }
+        } else {
+          duration = panel.duration || 2.0;
         }
         
         // Calculate SRT timings
@@ -2009,7 +2197,7 @@ export default function App() {
         // 4. Save metadata for render.py
         renderPyPanels.push({
           image: `panels/${panelFilename}`,
-          audio: panel.script ? `audio/${audioFilename}` : null,
+          audio: panel.audio ? `audio/${audioFilename}` : null,
           duration: parseFloat(duration.toFixed(3)),
           text: panel.script || ""
         });
@@ -2078,7 +2266,7 @@ for i, p in enumerate(panels):
         vf = f"scale={w}:{h}:force_original_aspect_ratio=decrease,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,zoompan=z='min(zoom+0.0012,1.2)':d={int(dur*30)}:s={w}x{h}:x='iw/2-(iw/zoom)/2':y='ih/2-(ih/zoom)/2'"
     elif fx_index == 1:
         # Slow Zoom Out
-        vf = f"scale={w}:{h}:force_original_aspect_ratio=decrease,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,zoompan=z='1.2-0.0012*on':d={int(dur*30)}:s={w}x{h}:x='iw/2-(iw/zoom)/2':y='ih/2-(iw/zoom)/2'"
+        vf = f"scale={w}:{h}:force_original_aspect_ratio=decrease,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,zoompan=z='1.2-0.0012*on':d={int(dur*30)}:s={w}x{h}:x='iw/2-(iw/zoom)/2':y='ih/2-(ih/zoom)/2'"
     elif fx_index == 2:
         # Pan Left
         vf = f"scale={w+200}:{h}:force_original_aspect_ratio=decrease,pad={w+200}:{h}:(ow-iw)/2:(oh-ih)/2,zoompan=z=1.1:d={int(dur*30)}:s={w}x{h}:x='(iw-iw/zoom)*(1-on/({int(dur*30)}))':y='(ih-ih/zoom)/2'"
@@ -2161,7 +2349,7 @@ echo   PanelFlow AI: One-Click Offline Video Renderer
 echo ===================================================
 echo.
 echo Menjalankan proses rendering video melalui Python dan FFmpeg...
-python render.py
+echo python render.py
 if %errorlevel% neq 0 (
     echo.
     echo Terjadi kesalahan saat merender video.
@@ -2194,17 +2382,13 @@ pause
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
 
-      if (failedAudioCount > 0) {
-        toast.warning(`Selesai dengan ${failedAudioCount} file audio yang gagal diunduh karena rate limit. Silakan ekspor kembali nanti jika ingin melengkapi.`, { duration: 8000 });
-      } else {
-        toast.success("FFmpeg Offline Project downloaded successfully!");
-        confetti({
-          particleCount: 150,
-          spread: 70,
-          origin: { y: 0.6 },
-          colors: ['#a855f7', '#ffffff', '#c084fc']
-        });
-      }
+      toast.success("FFmpeg Offline Project downloaded successfully!");
+      confetti({
+        particleCount: 150,
+        spread: 70,
+        origin: { y: 0.6 },
+        colors: ['#a855f7', '#ffffff', '#c084fc']
+      });
 
     } catch (err: any) {
       console.error("FFmpeg exporter failed:", err);
@@ -2212,6 +2396,233 @@ pause
     } finally {
       setIsProcessing(false);
       setExportProgress(0);
+    }
+  };
+
+  const handleDownloadAudiosOnly = async () => {
+    if (!currentChapter || currentChapter.panels.length === 0) {
+      toast.error("No panels found.");
+      return;
+    }
+
+    const { updatedChapter } = await ensureAllAudiosGenerated(currentChapter);
+
+    setIsProcessing(true);
+    setExportProgress(0);
+    toast.info("Compiling audio tracks...");
+
+    try {
+      const JSZip = (await import('jszip')).default;
+      const zip = new JSZip();
+      const audioFolder = zip.folder("audio");
+
+      let addedCount = 0;
+      for (let i = 0; i < updatedChapter.panels.length; i++) {
+        const panel = updatedChapter.panels[i];
+        if (panel.audio) {
+          const ext = getAudioExtension(panel.audio);
+          const binaryString = atob(panel.audio);
+          const bytes = new Uint8Array(binaryString.length);
+          for (let j = 0; j < binaryString.length; j++) {
+            bytes[j] = binaryString.charCodeAt(j);
+          }
+          const audioFilename = `audio_${String(i + 1).padStart(3, '0')}.${ext}`;
+          audioFolder?.file(audioFilename, bytes);
+          addedCount++;
+        }
+        setExportProgress(Math.round(((i + 1) / updatedChapter.panels.length) * 90));
+      }
+
+      if (addedCount === 0) {
+        toast.error("No audio tracks found to download.");
+        return;
+      }
+
+      setExportProgress(95);
+      const blob = await zip.generateAsync({ type: "blob" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${project.name.replace(/\s+/g, '_')}_Audios.zip`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+
+      toast.success("Audio tracks downloaded successfully!");
+    } catch (err: any) {
+      console.error("Audio download failed:", err);
+      toast.error("Failed to download audios: " + err.message);
+    } finally {
+      setIsProcessing(false);
+      setExportProgress(0);
+    }
+  };
+
+  const handleDownloadImagesOnly = async () => {
+    if (!currentChapter || currentChapter.panels.length === 0) {
+      toast.error("No panels found.");
+      return;
+    }
+
+    setIsProcessing(true);
+    setExportProgress(0);
+    toast.info("Compiling images...");
+
+    try {
+      const JSZip = (await import('jszip')).default;
+      const zip = new JSZip();
+      const panelsFolder = zip.folder("panels");
+
+      for (let i = 0; i < currentChapter.panels.length; i++) {
+        const panel = currentChapter.panels[i];
+        const imageBase64 = panel.imageUrl;
+        const imgData = imageBase64.split(',')[1] || imageBase64;
+        const panelFilename = `panel_${String(i + 1).padStart(3, '0')}.png`;
+        panelsFolder?.file(panelFilename, imgData, { base64: true });
+        setExportProgress(Math.round(((i + 1) / currentChapter.panels.length) * 90));
+      }
+
+      setExportProgress(95);
+      const blob = await zip.generateAsync({ type: "blob" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${project.name.replace(/\s+/g, '_')}_Panels.zip`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+
+      toast.success("Panel images downloaded successfully!");
+    } catch (err: any) {
+      console.error("Image download failed:", err);
+      toast.error("Failed to download images: " + err.message);
+    } finally {
+      setIsProcessing(false);
+      setExportProgress(0);
+    }
+  };
+
+  const handleDownloadSubtitlesOnly = async () => {
+    if (!currentChapter || currentChapter.panels.length === 0) {
+      toast.error("No panels found.");
+      return;
+    }
+
+    const { updatedChapter } = await ensureAllAudiosGenerated(currentChapter);
+
+    setIsProcessing(true);
+    setExportProgress(0);
+    toast.info("Generating subtitle file...");
+
+    try {
+      const srtLines: string[] = [];
+      let totalElapsedMs = 0;
+
+      for (let i = 0; i < updatedChapter.panels.length; i++) {
+        const panel = updatedChapter.panels[i];
+        let duration = 3.0;
+
+        if (panel.audio) {
+          try {
+            const binaryString = atob(panel.audio);
+            const bytes = new Uint8Array(binaryString.length);
+            for (let j = 0; j < binaryString.length; j++) {
+              bytes[j] = binaryString.charCodeAt(j);
+            }
+            const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
+            const decoded = await audioCtx.decodeAudioData(bytes.buffer.slice(0));
+            duration = decoded.duration / project.settings.globalSpeed;
+            await audioCtx.close();
+          } catch (err) {
+            duration = panel.duration || 2.0;
+          }
+        } else {
+          duration = panel.duration || 2.0;
+        }
+
+        const startMs = totalElapsedMs;
+        const endMs = totalElapsedMs + Math.round(duration * 1000);
+        totalElapsedMs = endMs;
+
+        const formatSrtTime = (ms: number) => {
+          const totalSecs = Math.floor(ms / 1000);
+          const remainMs = ms % 1000;
+          const hrs = Math.floor(totalSecs / 3600);
+          const mins = Math.floor((totalSecs % 3600) / 60);
+          const secs = totalSecs % 60;
+          return `${String(hrs).padStart(2, '0')}:${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')},${String(remainMs).padStart(3, '0')}`;
+        };
+
+        srtLines.push(String(i + 1));
+        srtLines.push(`${formatSrtTime(startMs)} --> ${formatSrtTime(endMs)}`);
+        srtLines.push(panel.script || "(Tanpa Suara)");
+        srtLines.push("");
+      }
+
+      const srtContent = srtLines.join("\n");
+      const blob = new Blob([srtContent], { type: "text/srt;charset=utf-8;" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${project.name.replace(/\s+/g, '_')}_Subtitles.srt`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+
+      toast.success("Subtitles SRT downloaded successfully!");
+    } catch (err: any) {
+      console.error("Subtitle download failed:", err);
+      toast.error("Failed to download subtitles: " + err.message);
+    } finally {
+      setIsProcessing(false);
+      setExportProgress(0);
+    }
+  };
+
+  const handleDownloadScriptOnly = async () => {
+    if (!currentChapter || currentChapter.panels.length === 0) {
+      toast.error("No panels found.");
+      return;
+    }
+
+    try {
+      const txtLines: string[] = [];
+      txtLines.push(`=== PROJECT: ${project.name} ===`);
+      txtLines.push(`=== CHAPTER: ${currentChapter.name} ===`);
+      txtLines.push("");
+
+      for (let i = 0; i < currentChapter.panels.length; i++) {
+        const panel = currentChapter.panels[i];
+        txtLines.push(`[PANEL ${i + 1}]`);
+        if (panel.context) {
+          txtLines.push(`Context/Lore: ${panel.context}`);
+        }
+        if (panel.script) {
+          txtLines.push(`Narration: ${panel.script}`);
+        } else {
+          txtLines.push(`Narration: (No Script)`);
+        }
+        txtLines.push("");
+      }
+
+      const txtContent = txtLines.join("\n");
+      const blob = new Blob([txtContent], { type: "text/plain;charset=utf-8;" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${project.name.replace(/\s+/g, '_')}_Script.txt`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+
+      toast.success("Narrative Script TXT downloaded successfully!");
+    } catch (err: any) {
+      console.error("Script download failed:", err);
+      toast.error("Failed to download script: " + err.message);
     }
   };
 
@@ -2237,17 +2648,52 @@ pause
         
         if (panel.script) {
           try {
-            toast.info(`Generating audio for panel ${i + 1}...`);
-            const base64Audio = project.settings.voiceEngine === 'gemini'
-              ? await generateSpeech(panel.script, project.settings.globalVoiceId)
-              : await generateFreeSpeech(panel.script, project.settings.language);
+            let base64Audio = panel.audio;
+            let isFallback = panel.audioIsFallbackSilence;
+            
+            if (!base64Audio || isFallback) {
+              try {
+                toast.info(`Generating audio for panel ${i + 1}...`);
+                base64Audio = project.settings.voiceEngine === 'gemini'
+                  ? await generateSpeech(panel.script, project.settings.globalVoiceId)
+                  : await generateFreeSpeech(panel.script, project.settings.language);
+                isFallback = false;
+                
+                // Cache generated audio in state & DB
+                const updatedPanel = { ...panel, audio: base64Audio, audioIsFallbackSilence: false };
+                setProject(prev => {
+                  const newProj = {
+                    ...prev,
+                    chapters: prev.chapters.map(c => 
+                      c.id === currentChapter.id 
+                        ? { ...c, panels: c.panels.map(p => p.id === panel.id ? updatedPanel : p) }
+                        : c
+                    )
+                  };
+                  saveProjectToDB(newProj);
+                  return newProj;
+                });
+              } catch (genErr) {
+                console.warn(`Failed to generate real-time audio for panel ${i + 1}:`, genErr);
+                if (!base64Audio) {
+                  base64Audio = generateSilence(panel.duration || 2.0);
+                  isFallback = true;
+                }
+              }
+            }
+            
             const binaryString = atob(base64Audio);
             const bytes = new Uint8Array(binaryString.length);
             for (let j = 0; j < binaryString.length; j++) {
               bytes[j] = binaryString.charCodeAt(j);
             }
             
-            const blob = new Blob([bytes], { type: 'audio/wav' });
+            // Dynamically detect MIME type based on header signature: 'RIFF' for WAV, otherwise audio/mpeg (MP3)
+            let mimeType = 'audio/mpeg';
+            if (bytes.length > 4 && bytes[0] === 82 && bytes[1] === 73 && bytes[2] === 70 && bytes[3] === 70) {
+              mimeType = 'audio/wav';
+            }
+            const blob = new Blob([bytes], { type: mimeType });
             const url = URL.createObjectURL(blob);
             const audio = new Audio(url);
             audio.playbackRate = project.settings.globalSpeed;
@@ -2406,13 +2852,55 @@ pause
                   <Settings className="w-5 h-5" />
                 </Button>
                 {currentChapter && currentChapter.panels.length > 0 && (
-                  <Button
-                    onClick={handleDownloadFFmpegProject}
-                    disabled={isProcessing}
-                    className="bg-purple-600 hover:bg-purple-700 text-white font-bold px-6 h-11 rounded-2xl shadow-xl shadow-purple-500/20 transition-all hover:scale-[1.02] active:scale-[0.98] mr-2"
-                  >
-                    <Download className="w-4 h-4 mr-2" /> Download FFmpeg
-                  </Button>
+                  <DropdownMenu>
+                    <DropdownMenuTrigger
+                      render={
+                        <Button
+                          disabled={isProcessing}
+                          className="bg-purple-600 hover:bg-purple-700 text-white font-bold px-6 h-11 rounded-2xl shadow-xl shadow-purple-500/20 transition-all hover:scale-[1.02] active:scale-[0.98] mr-2 gap-2"
+                        >
+                          <Download className="w-4 h-4" /> Export Options
+                        </Button>
+                      }
+                    />
+                    <DropdownMenuContent align="end" className="bg-card/95 backdrop-blur-md border border-border/80 rounded-2xl p-2 w-56 shadow-2xl">
+                      <DropdownMenuItem 
+                        onClick={handleDownloadFFmpegProject}
+                        className="flex items-center gap-2.5 p-3 rounded-xl hover:bg-purple-600/10 text-xs font-bold text-foreground cursor-pointer transition-colors"
+                      >
+                        <Download className="w-4 h-4 text-purple-400" />
+                        <span>Batch (Full FFmpeg ZIP)</span>
+                      </DropdownMenuItem>
+                      <DropdownMenuItem 
+                        onClick={handleDownloadAudiosOnly}
+                        className="flex items-center gap-2.5 p-3 rounded-xl hover:bg-blue-600/10 text-xs font-bold text-foreground cursor-pointer transition-colors"
+                      >
+                        <Volume2 className="w-4 h-4 text-blue-400" />
+                        <span>Audio Only ZIP</span>
+                      </DropdownMenuItem>
+                      <DropdownMenuItem 
+                        onClick={handleDownloadImagesOnly}
+                        className="flex items-center gap-2.5 p-3 rounded-xl hover:bg-emerald-600/10 text-xs font-bold text-foreground cursor-pointer transition-colors"
+                      >
+                        <ImageIcon className="w-4 h-4 text-emerald-400" />
+                        <span>Images Only ZIP</span>
+                      </DropdownMenuItem>
+                      <DropdownMenuItem 
+                        onClick={handleDownloadSubtitlesOnly}
+                        className="flex items-center gap-2.5 p-3 rounded-xl hover:bg-yellow-600/10 text-xs font-bold text-foreground cursor-pointer transition-colors"
+                      >
+                        <FileText className="w-4 h-4 text-yellow-400" />
+                        <span>Subtitles SRT</span>
+                      </DropdownMenuItem>
+                      <DropdownMenuItem 
+                        onClick={handleDownloadScriptOnly}
+                        className="flex items-center gap-2.5 p-3 rounded-xl hover:bg-fuchsia-600/10 text-xs font-bold text-foreground cursor-pointer transition-colors"
+                      >
+                        <Sparkles className="w-4 h-4 text-fuchsia-400" />
+                        <span>Narrative Script TXT</span>
+                      </DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
                 )}
                 <Button
                   onClick={handleExportVideo}
@@ -3208,31 +3696,7 @@ pause
                               `}>
                                 {chapter.pages[0] && <img src={chapter.pages[0]} className="w-full h-full object-contain" />}
                                 <div className="absolute inset-0 bg-background/40 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity gap-2">
-                                  {chapter.panels.length === 0 ? (
-                                    <>
-                                      <Button 
-                                        onClick={(e) => {
-                                          e.stopPropagation();
-                                          processChapter(chapter, 'auto');
-                                        }}
-                                        disabled={isProcessing}
-                                        className="bg-blue-600 hover:bg-blue-700 text-foreground font-black text-[10px] uppercase tracking-widest rounded-xl h-8 px-4"
-                                      >
-                                        Auto Snap
-                                      </Button>
-                                      <Button 
-                                        variant="outline"
-                                        size="icon"
-                                        onClick={(e) => {
-                                          e.stopPropagation();
-                                          processChapter(chapter, 'manual');
-                                        }}
-                                        className="bg-foreground/10 border-border text-foreground hover:bg-foreground/20 h-8 w-8 rounded-xl"
-                                      >
-                                        <Plus className="w-3.5 h-3.5" />
-                                      </Button>
-                                    </>
-                                  ) : (
+                                  {chapter.panels.length > 0 && (
                                     <Button 
                                       onClick={() => {
                                         setProject(prev => ({ ...prev, currentChapterId: chapter.id }));
@@ -3243,6 +3707,28 @@ pause
                                       Open
                                     </Button>
                                   )}
+                                  <Button 
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      if (chapter.panels.length > 0 && !window.confirm("Auto Snap will overwrite existing panels. Are you sure?")) return;
+                                      processChapter(chapter, 'auto');
+                                    }}
+                                    disabled={isProcessing}
+                                    className="bg-blue-600 hover:bg-blue-700 text-foreground font-black text-[10px] uppercase tracking-widest rounded-xl h-8 px-4"
+                                  >
+                                    Auto Snap
+                                  </Button>
+                                  <Button 
+                                    variant="outline"
+                                    size="icon"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      processChapter(chapter, 'manual');
+                                    }}
+                                    className="bg-foreground/10 border-border text-foreground hover:bg-foreground/20 h-8 w-8 rounded-xl"
+                                  >
+                                    <Plus className="w-3.5 h-3.5" />
+                                  </Button>
                                   
                                   <Button 
                                     variant="outline"
@@ -3371,14 +3857,14 @@ pause
                               <Button 
                                 variant="ghost" 
                                 onClick={() => {
-                                  if (confirm("Re-processing will permanently replace all current panels and scripts in this chapter. Continue?")) {
+                                  if (confirm("This will clear all current panels and scripts, and run Auto Snap over all pages in this chapter from the start. Continue?")) {
                                     processChapter(currentChapter, 'auto');
                                   }
                                 }}
                                 className="text-foreground hover:text-blue-400 hover:bg-blue-400/10 h-8 lg:h-9 font-bold text-[9px] lg:text-[10px] uppercase tracking-widest flex border border-transparent hover:border-blue-500/20"
                               >
-                                <Sparkles className="w-3.5 h-3.5 mr-2" />
-                                Re-Snap Chapter
+                                <Sparkles className="w-3.5 h-3.5 mr-2 animate-pulse text-blue-400" />
+                                Auto Snap Everything (From Start)
                               </Button>
                               <Button 
                                 variant="ghost" 
@@ -3550,19 +4036,43 @@ pause
                                   className="h-9 px-4 rounded-full font-bold text-xs uppercase tracking-wider bg-white text-black hover:bg-blue-50"
                                   onClick={(e) => {
                                     e.stopPropagation();
-                                    const pageIndex = currentChapter.pages.indexOf(panel.fullPageUrl);
+                                    const getBase64Signature = (str?: string) => {
+                                      if (!str) return '';
+                                      const clean = str.split(',').pop() || '';
+                                      if (clean.length < 1000) return clean.replace(/\s+/g, '');
+                                      return (clean.substring(0, 500) + clean.substring(clean.length - 500)).replace(/\s+/g, '');
+                                    };
+                                    const panelSig = getBase64Signature(panel.fullPageUrl);
+                                    let pageIndex = currentChapter.pages.findIndex(page => getBase64Signature(page) === panelSig);
+                                    if (pageIndex === -1) pageIndex = 0;
+                                    const pageUrl = currentChapter.pages[pageIndex];
+                                    
+                                    const firstPanelIndexOnPage = currentChapter.panels.findIndex(p => p.fullPageUrl === pageUrl);
+                                    const globalStart = firstPanelIndexOnPage !== -1 ? firstPanelIndexOnPage + 1 : 1;
+
                                     setManualSelectionData({ 
                                       chapterId: currentChapter.id, 
-                                      pageUrls: currentChapter.pages,
-                                      initialPageIndex: Math.max(0, pageIndex),
+                                      pageUrls: [pageUrl], // Only the single relevant page!
+                                      initialPageIndex: 0,
                                       initialRects: [
                                         {
-                                          pageIndex: Math.max(0, pageIndex),
-                                          rects: [{...panel.rect, id: panel.id}]
+                                          pageIndex: 0, // Index is 0 since pageUrls contains only 1 page
+                                          rects: currentChapter.panels
+                                            .filter(p => p.fullPageUrl === pageUrl)
+                                            .map(p => {
+                                              const globalIndex = currentChapter.panels.findIndex(cp => cp.id === p.id);
+                                              return { 
+                                                ...p.rect, 
+                                                id: p.id,
+                                                label: globalIndex !== -1 ? String(globalIndex + 1) : undefined
+                                              };
+                                            })
                                         }
                                       ],
                                       appendMode: false,
-                                      singlePanelMode: true // We are strictly replacing NO OTHER RECTS, just this one panel
+                                      singlePanelMode: true, // Replacing panels on this page while keeping other pages intact
+                                      panelNumber: idx + 1,
+                                      globalStartNumber: globalStart
                                     });
                                     setIsManualSelectorOpen(true);
                                   }}
@@ -3631,7 +4141,7 @@ pause
                                         if (c.id === currentChapter.id) {
                                           return {
                                             ...c,
-                                            panels: c.panels.map(p => p.id === panel.id ? { ...p, script: newScript } : p)
+                                            panels: c.panels.map(p => p.id === panel.id ? { ...p, script: newScript, audio: undefined } : p)
                                           };
                                         }
                                         return c;
@@ -4007,7 +4517,7 @@ pause
                               }`}
                               onClick={() => setProject(prev => ({ ...prev, settings: { ...prev.settings, videoFormat: 'landscape' } }))}
                             >
-                              <Video className="w-5 h-5 mb-1.5 text-blue-400" />
+                              <Monitor className="w-5 h-5 mb-1.5 text-blue-400" />
                               <span className="text-xs font-bold leading-none mb-1">Landscape (16:9)</span>
                               <span className="text-[9px] text-foreground/35 font-medium">Standard Web & YouTube</span>
                             </button>
@@ -4216,6 +4726,97 @@ pause
                       <Download className="w-6 h-6 mr-2" /> {isProcessing ? 'Exporting...' : 'Export Video'}
                     </Button>
                   </div>
+
+                  {currentChapter && currentChapter.panels.length > 0 && (
+                    <Card className="mt-8 bg-card/40 border border-border/50 backdrop-blur-md overflow-hidden shadow-2xl rounded-3xl p-6">
+                      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-border/50 pb-5 mb-6">
+                        <div>
+                          <h3 className="text-lg font-black tracking-tight text-foreground">Unduh Aset Cerita (Chapter Downloads)</h3>
+                          <p className="text-xs text-foreground/40 mt-1">Unduh komponen cerita secara terpisah untuk editing offline atau backup naskah & suara.</p>
+                        </div>
+                        <div className="flex items-center gap-2 px-3 py-1.5 bg-purple-500/10 text-purple-400 rounded-full border border-purple-500/20 text-[10px] font-mono font-bold uppercase tracking-wider self-start md:self-auto">
+                          <Sparkles className="w-3.5 h-3.5" /> Fast Cache Active
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
+                        {/* Button 1: Batch Download */}
+                        <button
+                          onClick={handleDownloadFFmpegProject}
+                          disabled={isProcessing}
+                          className="group flex flex-col items-center justify-center text-center p-5 bg-purple-500/5 hover:bg-purple-500/10 active:scale-[0.98] border border-purple-500/10 hover:border-purple-500/30 rounded-2xl cursor-pointer transition-all duration-300 gap-3"
+                        >
+                          <div className="w-12 h-12 bg-purple-500/10 group-hover:bg-purple-500/20 rounded-full flex items-center justify-center text-purple-400 group-hover:scale-110 transition-transform duration-300">
+                            <Download className="w-5 h-5" />
+                          </div>
+                          <div>
+                            <div className="text-sm font-bold text-foreground group-hover:text-purple-400 transition-colors">Batch Download</div>
+                            <div className="text-[10px] text-foreground/40 mt-1 leading-normal">ZIP lengkap (Gambar, Audio, Naskah & render.py)</div>
+                          </div>
+                        </button>
+
+                        {/* Button 2: Audio Tracks ZIP */}
+                        <button
+                          onClick={handleDownloadAudiosOnly}
+                          disabled={isProcessing}
+                          className="group flex flex-col items-center justify-center text-center p-5 bg-blue-500/5 hover:bg-blue-500/10 active:scale-[0.98] border border-blue-500/10 hover:border-blue-500/30 rounded-2xl cursor-pointer transition-all duration-300 gap-3"
+                        >
+                          <div className="w-12 h-12 bg-blue-500/10 group-hover:bg-blue-500/20 rounded-full flex items-center justify-center text-blue-400 group-hover:scale-110 transition-transform duration-300">
+                            <Volume2 className="w-5 h-5" />
+                          </div>
+                          <div>
+                            <div className="text-sm font-bold text-foreground group-hover:text-blue-400 transition-colors">Audio Download</div>
+                            <div className="text-[10px] text-foreground/40 mt-1 leading-normal">ZIP file trek suara (.MP3) setiap panel komik</div>
+                          </div>
+                        </button>
+
+                        {/* Button 3: Images ZIP */}
+                        <button
+                          onClick={handleDownloadImagesOnly}
+                          disabled={isProcessing}
+                          className="group flex flex-col items-center justify-center text-center p-5 bg-emerald-500/5 hover:bg-emerald-500/10 active:scale-[0.98] border border-emerald-500/10 hover:border-emerald-500/30 rounded-2xl cursor-pointer transition-all duration-300 gap-3"
+                        >
+                          <div className="w-12 h-12 bg-emerald-500/10 group-hover:bg-emerald-500/20 rounded-full flex items-center justify-center text-emerald-400 group-hover:scale-110 transition-transform duration-300">
+                            <ImageIcon className="w-5 h-5" />
+                          </div>
+                          <div>
+                            <div className="text-sm font-bold text-foreground group-hover:text-emerald-400 transition-colors">Image Download</div>
+                            <div className="text-[10px] text-foreground/40 mt-1 leading-normal">ZIP berisi semua gambar panel hasil cropping</div>
+                          </div>
+                        </button>
+
+                        {/* Button 4: Subtitles SRT */}
+                        <button
+                          onClick={handleDownloadSubtitlesOnly}
+                          disabled={isProcessing}
+                          className="group flex flex-col items-center justify-center text-center p-5 bg-yellow-500/5 hover:bg-yellow-500/10 active:scale-[0.98] border border-yellow-500/10 hover:border-yellow-500/30 rounded-2xl cursor-pointer transition-all duration-300 gap-3"
+                        >
+                          <div className="w-12 h-12 bg-yellow-500/10 group-hover:bg-yellow-500/20 rounded-full flex items-center justify-center text-yellow-400 group-hover:scale-110 transition-transform duration-300">
+                            <FileText className="w-5 h-5" />
+                          </div>
+                          <div>
+                            <div className="text-sm font-bold text-foreground group-hover:text-yellow-400 transition-colors">Subtitle Download</div>
+                            <div className="text-[10px] text-foreground/40 mt-1 leading-normal">Unduh naskah sbg file teks subtitle (.SRT)</div>
+                          </div>
+                        </button>
+
+                        {/* Button 5: Narrative Script TXT */}
+                        <button
+                          onClick={handleDownloadScriptOnly}
+                          disabled={isProcessing}
+                          className="group flex flex-col items-center justify-center text-center p-5 bg-fuchsia-500/5 hover:bg-fuchsia-500/10 active:scale-[0.98] border border-fuchsia-500/10 hover:border-fuchsia-500/30 rounded-2xl cursor-pointer transition-all duration-300 gap-3"
+                        >
+                          <div className="w-12 h-12 bg-fuchsia-500/10 group-hover:bg-fuchsia-500/20 rounded-full flex items-center justify-center text-fuchsia-400 group-hover:scale-110 transition-transform duration-300">
+                            <Sparkles className="w-5 h-5" />
+                          </div>
+                          <div>
+                            <div className="text-sm font-bold text-foreground group-hover:text-fuchsia-400 transition-colors">Script Download</div>
+                            <div className="text-[10px] text-foreground/40 mt-1 leading-normal">Unduh naskah komik lengkap (.TXT) naskah AI</div>
+                          </div>
+                        </button>
+                      </div>
+                    </Card>
+                  )}
                 </motion.div>
               </TabsContent>
 
@@ -4305,6 +4906,22 @@ pause
               </p>
             </DialogHeader>
             <div className="grid grid-cols-1 gap-4 py-4">
+              {/* Auto Snap Toggle */}
+              <div className="flex items-center justify-between p-4 bg-foreground/5 border border-border rounded-2xl">
+                <div className="flex flex-col gap-1 pr-4">
+                  <span className="text-xs font-bold uppercase tracking-wider text-foreground">Auto-Snap Panels</span>
+                  <span className="text-[10px] text-foreground/40 font-medium">
+                    Automatically slice pages into panels using AI right after upload
+                  </span>
+                </div>
+                <input 
+                  type="checkbox" 
+                  checked={autoSnapAfterUpload} 
+                  onChange={(e) => setAutoSnapAfterUpload(e.target.checked)}
+                  className="w-4 h-4 accent-blue-500 rounded border-border"
+                />
+              </div>
+
               <Button 
                 variant="outline"
                 className="h-20 border-border bg-foreground/5 hover:bg-foreground/10 hover:border-blue-500/50 flex flex-col items-start p-4 text-left rounded-2xl gap-1 transition-all"
@@ -4501,6 +5118,69 @@ pause
           </DialogContent>
         </Dialog>
 
+        <Dialog open={!!startPageSelection} onOpenChange={(open) => !open && setStartPageSelection(null)}>
+          <DialogContent className="bg-background border-border text-foreground max-w-md max-h-[85vh] flex flex-col p-4 overflow-hidden">
+            <DialogHeader className="border-b border-border/40 pb-3">
+              <DialogTitle className="text-foreground text-lg font-black uppercase tracking-tight">Manual Snap Options</DialogTitle>
+              <p className="text-xs text-foreground/50 mt-0.5">Select a page to start snapping from.</p>
+            </DialogHeader>
+            <div className="flex-1 overflow-y-auto py-4 pr-1 space-y-2">
+              <div className="flex flex-col gap-2.5">
+                {startPageSelection && startPageSelection.chapter.pages.map((pageUrl, idx) => {
+                  const isLastWorked = startPageSelection.lastIndex === idx;
+                  return (
+                    <Button
+                      key={idx}
+                      variant="outline"
+                      onClick={() => {
+                        const chapter = startPageSelection.chapter;
+                        setManualSelectionData({ 
+                          chapterId: chapter.id, 
+                          pageUrls: chapter.pages, 
+                          initialPageIndex: idx,
+                          initialRects: chapter.pages.map((pUrl, pIdx) => ({
+                            pageIndex: pIdx,
+                            rects: chapter.panels
+                              .filter(p => p.fullPageUrl === pUrl)
+                              .map(p => {
+                                const globalIndex = chapter.panels.findIndex(cp => cp.id === p.id);
+                                return {
+                                  ...p.rect,
+                                  id: p.id,
+                                  label: globalIndex !== -1 ? String(globalIndex + 1) : undefined
+                                };
+                              })
+                          }))
+                        });
+                        setIsManualSelectorOpen(true);
+                        setStartPageSelection(null);
+                      }}
+                      className={`h-16 justify-start px-4 rounded-xl border-border hover:bg-white/5 flex gap-4 cursor-pointer text-left w-full ${isLastWorked ? 'ring-2 ring-blue-500 border-blue-500 bg-blue-500/10' : ''}`}
+                    >
+                      <div className="w-8 h-12 bg-black/40 rounded border border-border/50 overflow-hidden shrink-0">
+                        <img src={pageUrl} className="w-full h-full object-cover" />
+                      </div>
+                      <div className="flex flex-col items-start min-w-0">
+                        <span className="text-xs font-bold text-foreground">Page {idx + 1}</span>
+                        {isLastWorked && <span className="text-[9px] text-blue-400 font-bold uppercase tracking-wider mt-0.5">Last Visited ★</span>}
+                      </div>
+                    </Button>
+                  );
+                })}
+              </div>
+            </div>
+            <div className="flex justify-end pt-4 border-t border-border/40 mt-4">
+              <Button 
+                variant="ghost" 
+                onClick={() => setStartPageSelection(null)}
+                className="text-foreground/60 hover:text-foreground h-10 px-6 rounded-xl text-xs uppercase tracking-wider cursor-pointer"
+              >
+                Cancel
+              </Button>
+            </div>
+          </DialogContent>
+        </Dialog>
+
         <Dialog open={isManualSelectorOpen} onOpenChange={setIsManualSelectorOpen}>
           <DialogContent className="bg-background border-none text-foreground max-w-none sm:max-w-none w-screen h-screen flex flex-col p-0 rounded-none overflow-hidden fixed inset-0 translate-x-0 translate-y-0 left-0 top-0">
             {manualSelectionData && (
@@ -4513,8 +5193,39 @@ pause
                   setIsManualSelectorOpen(false);
                   setManualSelectionData(null);
                 }}
+                panelNumber={manualSelectionData.panelNumber}
+                globalStartNumber={manualSelectionData.globalStartNumber}
               />
             )}
+          </DialogContent>
+        </Dialog>
+
+        <Dialog open={!!previewImage} onOpenChange={(open) => !open && setPreviewImage(null)}>
+          <DialogContent className="bg-background border-border text-foreground max-w-4xl max-h-[90vh] flex flex-col p-4 overflow-hidden">
+            <DialogHeader className="border-b border-border/40 pb-3 flex flex-row items-center justify-between">
+              <div>
+                <DialogTitle className="text-foreground text-lg font-bold">Page Preview</DialogTitle>
+                <p className="text-xs text-foreground/50 mt-0.5">Viewing full uploaded page image</p>
+              </div>
+            </DialogHeader>
+            <div className="flex-1 overflow-auto flex items-center justify-center p-2 bg-black/40 rounded-xl border border-border/40 mt-4 min-h-[300px]">
+              {previewImage && (
+                <img 
+                  src={previewImage} 
+                  alt="Page Preview" 
+                  className="max-w-full max-h-[70vh] object-contain rounded-lg shadow-xl" 
+                />
+              )}
+            </div>
+            <div className="flex justify-end gap-2 pt-4 border-t border-border/40 mt-4">
+              <Button 
+                variant="outline" 
+                onClick={() => setPreviewImage(null)}
+                className="border-border text-foreground/60 hover:text-foreground h-10 px-6 rounded-xl text-xs uppercase tracking-wider cursor-pointer"
+              >
+                Close
+              </Button>
+            </div>
           </DialogContent>
         </Dialog>
 
