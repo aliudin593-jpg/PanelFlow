@@ -473,7 +473,7 @@ export default function App() {
     toast.success("Moved page to Category!");
   };
 
-  const handleWizardFinish = async () => {
+  const handleWizardFinish = async (runAutoSnap: boolean = true) => {
     if (wizardFiles.length === 0) {
       toast.error("Please add at least one image/PDF file.");
       return;
@@ -554,8 +554,6 @@ export default function App() {
       setCurrentCategoryId(wizardCategoryId);
       setCurrentTitleId(resolvedTitleId);
       
-      toast.success(`Chapter "${wizardChapterName.trim()}" created with ${base64Pages.length} pages! Starting Auto Snap...`);
-      
       // Reset wizard
       setWizardStep(1);
       setWizardTitleName('');
@@ -563,8 +561,13 @@ export default function App() {
       setWizardChapterName('');
       setWizardFiles([]);
       
-      // 4. Automatically run Auto Snap over the newly created chapter!
-      await processChapter(newChapter, 'auto');
+      if (runAutoSnap) {
+        toast.success(`Chapter "${wizardChapterName.trim()}" created with ${base64Pages.length} pages! Starting Auto Snap...`);
+        // 4. Automatically run Auto Snap over the newly created chapter!
+        await processChapter(newChapter, 'auto');
+      } else {
+        toast.success(`Chapter "${wizardChapterName.trim()}" created with ${base64Pages.length} pages and saved!`);
+      }
       
     } catch (err: any) {
       console.error(err);
@@ -984,32 +987,74 @@ export default function App() {
 
   const [selectedPanelIds, setSelectedPanelIds] = useState<Set<string>>(new Set());
 
+  const handleDeleteSingleTitle = (titleId: string, titleName: string, e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    if (!window.confirm(`Yakin ingin menghapus Judul "${titleName}" beserta seluruh chapter-nya?`)) return;
+    
+    setProject(prev => {
+      const remainingTitles = prev.titles.filter(t => t.id !== titleId);
+      const remainingChapters = prev.chapters.filter(c => c.titleId !== titleId);
+      const isCurrentChapterDeleted = prev.currentChapterId 
+        ? remainingChapters.every(c => c.id !== prev.currentChapterId)
+        : false;
+      return {
+        ...prev,
+        titles: remainingTitles,
+        chapters: remainingChapters,
+        currentChapterId: isCurrentChapterDeleted ? undefined : prev.currentChapterId
+      };
+    });
+
+    if (currentTitleId === titleId) {
+      setCurrentTitleId(null);
+    }
+    setSelectedLibraryTitleIds(prev => {
+      const next = new Set(prev);
+      next.delete(titleId);
+      return next;
+    });
+    toast.success(`Judul "${titleName}" berhasil dihapus!`);
+  };
+
   const handleBulkDeleteTitles = () => {
+    if (selectedLibraryTitleIds.size === 0) return;
+    if (!window.confirm(`Yakin ingin menghapus ${selectedLibraryTitleIds.size} Judul beserta seluruh chapter-nya?`)) return;
+
     setProject(prev => {
       const remainingTitles = prev.titles.filter(t => !selectedLibraryTitleIds.has(t.id));
       const remainingChapters = prev.chapters.filter(c => !selectedLibraryTitleIds.has(c.titleId));
+      const isCurrentChapterDeleted = prev.currentChapterId 
+        ? remainingChapters.every(c => c.id !== prev.currentChapterId)
+        : false;
       return { 
         ...prev, 
         titles: remainingTitles, 
         chapters: remainingChapters,
-        currentChapterId: remainingChapters.find(c => c.id === prev.currentChapterId) ? prev.currentChapterId : null
+        currentChapterId: isCurrentChapterDeleted ? undefined : prev.currentChapterId
       };
     });
+
+    if (currentTitleId && selectedLibraryTitleIds.has(currentTitleId)) {
+      setCurrentTitleId(null);
+    }
     setSelectedLibraryTitleIds(new Set());
-    toast.success('Titles deleted');
+    toast.success('Title berhasil dihapus!');
   };
 
   const handleBulkDeleteChapters = () => {
+    if (selectedLibraryChapterIds.size === 0) return;
+    if (!window.confirm(`Yakin ingin menghapus ${selectedLibraryChapterIds.size} Chapter?`)) return;
+
     setProject(prev => ({
       ...prev,
       chapters: prev.chapters.filter(c => !selectedLibraryChapterIds.has(c.id)),
-      currentChapterId: selectedLibraryChapterIds.has(prev.currentChapterId!) ? null : prev.currentChapterId
+      currentChapterId: selectedLibraryChapterIds.has(prev.currentChapterId!) ? undefined : prev.currentChapterId
     }));
     setSelectedLibraryChapterIds(new Set());
-    toast.success('Chapters deleted');
+    toast.success('Chapter berhasil dihapus!');
   };
 
-  const handleMergeAndAutoSnap = async () => {
+  const handleMergeChapters = async (runAutoSnap: boolean = true) => {
     if (selectedLibraryChapterIds.size < 2) {
       toast.error("Please select at least 2 chapters to merge.");
       return;
@@ -1051,10 +1096,14 @@ export default function App() {
     }));
 
     setSelectedLibraryChapterIds(new Set());
-    toast.success(`Chapters merged successfully into "${mergedName}"! Starting Auto Snap...`);
-    setActiveTab('edit');
-    
-    await processChapter(mergedChapter, 'auto');
+
+    if (runAutoSnap) {
+      toast.success(`Chapters merged successfully into "${mergedName}"! Starting Auto Snap...`);
+      setActiveTab('edit');
+      await processChapter(mergedChapter, 'auto');
+    } else {
+      toast.success(`Chapters merged successfully into "${mergedName}"! Saved to library.`);
+    }
   };
 
   const processUpload = async (files: File[], mode: 'separate' | 'combine' | 'append') => {
@@ -3379,31 +3428,51 @@ pause
                               </div>
                             )}
 
-                            <div className="flex justify-between pt-4">
+                            <div className="flex items-center justify-between pt-4 gap-3">
                               <Button
                                 variant="outline"
                                 onClick={() => setWizardStep(3)}
-                                className="border-border text-foreground/60 hover:text-foreground h-11 px-8 rounded-xl text-xs uppercase tracking-wider cursor-pointer"
+                                className="border-border text-foreground/60 hover:text-foreground h-11 px-6 rounded-xl text-xs uppercase tracking-wider cursor-pointer"
                               >
                                 Kembali
                               </Button>
-                              <Button
-                                onClick={handleWizardFinish}
-                                disabled={isProcessing}
-                                className="bg-blue-600 hover:bg-blue-700 text-white font-black h-11 px-8 rounded-xl text-xs uppercase tracking-[0.15em] shadow-lg shadow-blue-500/20 cursor-pointer"
-                              >
-                                {isProcessing ? (
-                                  <div className="flex items-center gap-2">
-                                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                                    <span>Memproses...</span>
-                                  </div>
-                                ) : (
-                                  <div className="flex items-center gap-2">
-                                    <Sparkles className="w-4 h-4" />
-                                    <span>Selesai & Auto Snap</span>
-                                  </div>
-                                )}
-                              </Button>
+                              <div className="flex items-center gap-3">
+                                <Button
+                                  onClick={() => handleWizardFinish(false)}
+                                  disabled={isProcessing}
+                                  variant="outline"
+                                  className="border-blue-500/50 hover:bg-blue-500/10 text-blue-400 font-bold h-11 px-6 rounded-xl text-xs uppercase tracking-wider cursor-pointer"
+                                >
+                                  {isProcessing ? (
+                                    <div className="flex items-center gap-2">
+                                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                      <span>Memproses...</span>
+                                    </div>
+                                  ) : (
+                                    <div className="flex items-center gap-2">
+                                      <Save className="w-4 h-4" />
+                                      <span>Simpan Chapter</span>
+                                    </div>
+                                  )}
+                                </Button>
+                                <Button
+                                  onClick={() => handleWizardFinish(true)}
+                                  disabled={isProcessing}
+                                  className="bg-blue-600 hover:bg-blue-700 text-white font-black h-11 px-6 rounded-xl text-xs uppercase tracking-[0.1em] shadow-lg shadow-blue-500/20 cursor-pointer"
+                                >
+                                  {isProcessing ? (
+                                    <div className="flex items-center gap-2">
+                                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                      <span>Memproses...</span>
+                                    </div>
+                                  ) : (
+                                    <div className="flex items-center gap-2">
+                                      <Sparkles className="w-4 h-4" />
+                                      <span>Simpan & Auto Snap</span>
+                                    </div>
+                                  )}
+                                </Button>
+                              </div>
                             </div>
                           </motion.div>
                         )}
@@ -3474,6 +3543,17 @@ pause
                           </h3>
                         </div>
                         <div className="flex items-center gap-4">
+                          {selectedLibraryTitleIds.size > 0 && (
+                            <Button 
+                              variant="destructive" 
+                              size="sm"
+                              onClick={handleBulkDeleteTitles}
+                              className="bg-red-500/20 text-red-500 hover:bg-red-500/30 font-bold tracking-widest text-[10px] uppercase h-10 px-4 rounded-xl"
+                            >
+                              <Trash2 className="w-4 h-4 mr-2" />
+                              Hapus {selectedLibraryTitleIds.size} Title
+                            </Button>
+                          )}
                           <div className="flex items-center bg-foreground/5 p-1 rounded-xl border border-border/50 hidden md:flex">
                             <Button variant="ghost" size="icon" title="List View" onClick={() => setTitleViewMode('list')} className={`h-8 w-8 rounded-lg transition-all ${titleViewMode === 'list' ? 'bg-blue-600 text-foreground shadow-lg shadow-blue-500/20' : 'text-foreground/40 hover:text-foreground hover:bg-foreground/5'}`}>
                               <List className="w-4 h-4" />
@@ -3545,6 +3625,17 @@ pause
                             >
                               <div className={`w-6 h-6 rounded-lg border-2 flex items-center justify-center transition-colors ${selectedLibraryTitleIds.has(title.id) ? 'bg-red-500 border-red-500' : 'border-border bg-background/40 hover:border-border/500'}`}>
                                 {selectedLibraryTitleIds.has(title.id) && <Check className="w-4 h-4 text-foreground" />}
+                              </div>
+                            </div>
+
+                            {/* Delete single title button */}
+                            <div 
+                              className="absolute top-3 right-3 z-20 opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer"
+                              onClick={(e) => handleDeleteSingleTitle(title.id, title.name, e)}
+                              title="Hapus Title"
+                            >
+                              <div className="w-7 h-7 rounded-lg bg-red-600/80 hover:bg-red-600 text-white flex items-center justify-center shadow-md transition-colors">
+                                <Trash2 className="w-3.5 h-3.5" />
                               </div>
                             </div>
                             
@@ -3625,14 +3716,25 @@ pause
                             </Button>
                           </div>
                           {selectedLibraryChapterIds.size > 1 && (
-                            <Button 
-                              onClick={handleMergeAndAutoSnap}
-                              disabled={isProcessing}
-                              className="bg-blue-600 hover:bg-blue-700 text-white font-bold tracking-widest text-[10px] uppercase h-10 px-4 rounded-xl mr-2"
-                            >
-                              <Sparkles className="w-4 h-4 mr-2" />
-                              Merge & Auto Snap ({selectedLibraryChapterIds.size})
-                            </Button>
+                            <div className="flex items-center gap-2 mr-2">
+                              <Button 
+                                onClick={() => handleMergeChapters(false)}
+                                disabled={isProcessing}
+                                variant="outline"
+                                className="border-blue-500/50 hover:bg-blue-500/10 text-blue-400 font-bold tracking-widest text-[10px] uppercase h-10 px-3 rounded-xl cursor-pointer"
+                              >
+                                <Save className="w-3.5 h-3.5 mr-1.5" />
+                                Merge Only ({selectedLibraryChapterIds.size})
+                              </Button>
+                              <Button 
+                                onClick={() => handleMergeChapters(true)}
+                                disabled={isProcessing}
+                                className="bg-blue-600 hover:bg-blue-700 text-white font-bold tracking-widest text-[10px] uppercase h-10 px-3 rounded-xl cursor-pointer"
+                              >
+                                <Sparkles className="w-3.5 h-3.5 mr-1.5" />
+                                Merge & Auto Snap ({selectedLibraryChapterIds.size})
+                              </Button>
+                            </div>
                           )}
                           {selectedLibraryChapterIds.size > 0 && (
                             <Button 

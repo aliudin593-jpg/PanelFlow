@@ -2,7 +2,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Button } from '@/components/ui/button';
 import { Separator } from '@/components/ui/separator';
-import { Scissors, Check, X, Plus, ZoomIn, ZoomOut, Maximize, Move, ArrowsUpFromLine, Sparkles, Loader2 } from 'lucide-react';
+import { Scissors, Check, X, Plus, ZoomIn, ZoomOut, Maximize, Move, ArrowsUpFromLine, Sparkles, Loader2, ChevronUp, ChevronDown, Hand, ArrowUp, ArrowDown } from 'lucide-react';
 import { detectPanels } from '../services/gemini';
 import { cropImage, isBlankImage } from '../services/imageProcessing';
 
@@ -32,6 +32,7 @@ export function ManualPanelSelector({ images, initialPageIndex = 0, initialRects
   const [currentRect, setCurrentRect] = useState<Rect | null>(null);
   const [isDrawing, setIsDrawing] = useState(false);
   const [isPanning, setIsPanning] = useState(false);
+  const [isPanMode, setIsPanMode] = useState(false);
   const [resizingIndex, setResizingIndex] = useState<number | null>(null);
   const [resizeHandle, setResizeHandle] = useState<string | null>(null);
   const [zoom, setZoom] = useState(0.3);
@@ -212,8 +213,70 @@ export function ManualPanelSelector({ images, initialPageIndex = 0, initialRects
     return { x: Math.max(0, Math.min(1000, x)), y: Math.max(0, Math.min(1000, y)) };
   };
 
+  const scrollbarTrackRef = useRef<HTMLDivElement>(null);
+  const [isDraggingScrollbar, setIsDraggingScrollbar] = useState(false);
+
+  const getMaxScrollY = () => {
+    if (!imgRef.current || !containerRef.current) return 1000;
+    const containerH = containerRef.current.clientHeight;
+    const imgH = imgRef.current.clientHeight * zoom;
+    return Math.max(400, (imgH + containerH) / 2);
+  };
+
+  const getScrollPercent = () => {
+    const maxM = getMaxScrollY();
+    const clampedY = Math.max(-maxM, Math.min(maxM, pan.y));
+    return Math.round(((maxM - clampedY) / (2 * maxM)) * 100);
+  };
+
+  const setScrollFromPercent = (percent: number) => {
+    const maxM = getMaxScrollY();
+    const targetY = maxM - (Math.max(0, Math.min(100, percent)) / 100) * (2 * maxM);
+    setPan(prev => ({ ...prev, y: targetY }));
+  };
+
+  const handleScrollbarPointer = (clientY: number) => {
+    if (!scrollbarTrackRef.current) return;
+    const rect = scrollbarTrackRef.current.getBoundingClientRect();
+    const relativeY = clientY - rect.top;
+    const clampedY = Math.max(0, Math.min(rect.height, relativeY));
+    const percent = (clampedY / rect.height) * 100;
+    setScrollFromPercent(percent);
+  };
+
+  useEffect(() => {
+    if (!isDraggingScrollbar) return;
+
+    const handlePointerMove = (e: PointerEvent) => {
+      handleScrollbarPointer(e.clientY);
+    };
+
+    const handlePointerUp = () => {
+      setIsDraggingScrollbar(false);
+    };
+
+    window.addEventListener('pointermove', handlePointerMove);
+    window.addEventListener('pointerup', handlePointerUp);
+    return () => {
+      window.removeEventListener('pointermove', handlePointerMove);
+      window.removeEventListener('pointerup', handlePointerUp);
+    };
+  }, [isDraggingScrollbar, zoom]);
+
+  const scrollBy = (amount: number) => {
+    setPan(prev => ({ ...prev, y: prev.y + amount }));
+  };
+
+  const scrollToTop = () => {
+    setScrollFromPercent(0);
+  };
+
+  const scrollToBottom = () => {
+    setScrollFromPercent(100);
+  };
+
   const handleMouseDown = (e: React.MouseEvent) => {
-    if (e.button === 1 || e.altKey) {
+    if (e.button === 1 || e.altKey || isPanMode) {
       setIsPanning(true);
       setLastMousePos({ x: e.clientX, y: e.clientY });
       return;
@@ -375,7 +438,7 @@ export function ManualPanelSelector({ images, initialPageIndex = 0, initialRects
         onMouseUp={handleMouseUp}
         onMouseLeave={handleMouseUp}
         onContextMenu={(e) => e.preventDefault()}
-        style={{ cursor: isPanning ? 'grabbing' : (resizingIndex !== null ? (resizeHandle === 'ne' || resizeHandle === 'sw' ? 'nesw-resize' : 'nwse-resize') : 'crosshair') }}
+        style={{ cursor: isPanning ? 'grabbing' : (isPanMode ? 'grab' : (resizingIndex !== null ? (resizeHandle === 'ne' || resizeHandle === 'sw' ? 'nesw-resize' : 'nwse-resize') : 'crosshair')) }}
       >
         <div 
           className="absolute inset-0 flex items-center justify-center pointer-events-none"
@@ -478,6 +541,51 @@ export function ManualPanelSelector({ images, initialPageIndex = 0, initialRects
         </div>
       </main>
 
+      {/* Interactive Vertical Scroll Bar */}
+      <div className="absolute right-4 top-24 bottom-24 z-50 flex flex-col items-center justify-between py-4 px-2.5 rounded-2xl border border-white/10 bg-black/90 backdrop-blur-2xl shadow-[0_0_40px_rgba(0,0,0,0.6)] select-none w-14">
+        <button 
+          onClick={scrollToTop}
+          className="text-[9px] font-mono font-bold text-blue-400/80 hover:text-blue-300 uppercase tracking-widest transition-colors mb-2 cursor-pointer"
+          title="Scroll to Top (0%)"
+        >
+          TOP
+        </button>
+
+        {/* Scrollbar Track */}
+        <div 
+          ref={scrollbarTrackRef}
+          onPointerDown={(e) => {
+            setIsDraggingScrollbar(true);
+            handleScrollbarPointer(e.clientY);
+          }}
+          className="relative flex-1 w-4 bg-white/10 hover:bg-white/20 rounded-full cursor-pointer transition-colors flex items-center justify-center my-1 group/track overflow-visible"
+          title="Drag or click vertical scroll bar to scroll page up and down"
+        >
+          {/* Scrollbar Track Center Line */}
+          <div className="w-0.5 h-full bg-blue-500/30 rounded-full" />
+
+          {/* Scrollbar Thumb */}
+          <div 
+            className={`absolute w-7 h-10 bg-blue-600 hover:bg-blue-500 rounded-xl border-2 border-white/90 shadow-lg shadow-blue-500/50 flex flex-col items-center justify-center gap-0.5 transition-transform ${isDraggingScrollbar ? 'scale-110 bg-blue-500 ring-4 ring-blue-500/30' : ''}`}
+            style={{ 
+              top: `calc(${getScrollPercent()}% - 20px)`,
+              left: '-6px'
+            }}
+          >
+            <div className="w-3 h-0.5 bg-white/80 rounded-full" />
+            <div className="w-3 h-0.5 bg-white/80 rounded-full" />
+          </div>
+        </div>
+
+        <button 
+          onClick={scrollToBottom}
+          className="text-[9px] font-mono font-bold text-blue-400/80 hover:text-blue-300 uppercase tracking-widest transition-colors mt-2 cursor-pointer"
+          title="Scroll to Bottom (100%)"
+        >
+          {getScrollPercent()}%
+        </button>
+      </div>
+
       {/* Floating Header */}
       <div className="absolute top-4 left-0 right-0 flex justify-center pointer-events-none z-50 px-4">
         <header className="flex flex-wrap items-center justify-between px-4 py-3 rounded-2xl border border-white/10 bg-black/90 backdrop-blur-2xl gap-3 shadow-[0_0_50px_rgba(0,0,0,0.5)] pointer-events-auto max-w-full">
@@ -532,6 +640,38 @@ export function ManualPanelSelector({ images, initialPageIndex = 0, initialRects
             </div>
             <div className="px-2 text-[9px] font-mono font-bold text-blue-400/80 min-w-[40px] text-center">
               {Math.round(zoom * 100)}%
+            </div>
+            <Separator orientation="vertical" className="h-4 bg-white/10 mx-0.5" />
+            
+            {/* Scroll & Pan Controls in Header */}
+            <div className="flex items-center gap-0.5">
+              <Button 
+                variant="ghost" 
+                size="icon" 
+                onClick={() => scrollBy(200)} 
+                title="Scroll Ke Atas" 
+                className="h-8 w-8 text-white/40 hover:text-white hover:bg-white/5 rounded-lg"
+              >
+                <ChevronUp className="w-4 h-4" />
+              </Button>
+              <Button 
+                variant="ghost" 
+                size="icon" 
+                onClick={() => setIsPanMode(prev => !prev)} 
+                title={isPanMode ? "Mode Scroll Drag Aktif" : "Mode Draw Panel Aktif"}
+                className={`h-8 w-8 rounded-lg transition-all ${isPanMode ? 'bg-blue-600 text-white shadow-lg shadow-blue-500/30' : 'text-white/40 hover:bg-white/5 hover:text-white'}`}
+              >
+                <Hand className="w-3.5 h-3.5" />
+              </Button>
+              <Button 
+                variant="ghost" 
+                size="icon" 
+                onClick={() => scrollBy(-200)} 
+                title="Scroll Ke Bawah" 
+                className="h-8 w-8 text-white/40 hover:text-white hover:bg-white/5 rounded-lg"
+              >
+                <ChevronDown className="w-4 h-4" />
+              </Button>
             </div>
           </div>
         </header>
