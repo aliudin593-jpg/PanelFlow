@@ -421,7 +421,7 @@ export function ManualPanelSelector({ chapterId, images, initialPageIndex = 0, i
     const handleWheelNative = (e: WheelEvent) => {
       if (e.ctrlKey) {
         e.preventDefault();
-        const factor = e.deltaY > 0 ? 0.9 : 1.1;
+        const factor = e.deltaY > 0 ? 0.85 : 1.15;
         
         const container = containerRef.current;
         if (!container) return;
@@ -433,14 +433,17 @@ export function ManualPanelSelector({ chapterId, images, initialPageIndex = 0, i
         const centerY = rect.height / 2;
 
         setZoom(prevZoom => {
-          const nextZoom = Math.max(0.1, Math.min(10, prevZoom * factor));
+          const nextZoom = Math.max(0.02, Math.min(10, prevZoom * factor));
           
-          // Adjust pan to keep the point under the mouse fixed
-          // Formula for transform-origin: center center
-          setPan(prevPan => ({
-            x: prevPan.x + (prevZoom - nextZoom) * (mouseX - centerX),
-            y: prevPan.y + (prevZoom - nextZoom) * (mouseY - centerY)
-          }));
+          setPan(prevPan => {
+            let newX = prevPan.x + (prevZoom - nextZoom) * (mouseX - centerX);
+            let newY = prevPan.y + (prevZoom - nextZoom) * (mouseY - centerY);
+            if (nextZoom < 0.25) {
+              newX *= 0.8;
+              newY *= 0.8;
+            }
+            return { x: newX, y: newY };
+          });
           
           return nextZoom;
         });
@@ -459,9 +462,29 @@ export function ManualPanelSelector({ chapterId, images, initialPageIndex = 0, i
   }, [zoom, fitMode]);
 
   const handleZoom = (delta: number) => {
-    setZoom(prev => {
-      const next = Math.max(0.1, Math.min(10, prev + delta));
-      return next;
+    setZoom(prevZoom => {
+      let nextZoom: number;
+      if (delta < 0) {
+        // Zoom out proportionally when small
+        nextZoom = prevZoom > 0.3 ? prevZoom + delta : prevZoom * 0.75;
+      } else {
+        // Zoom in proportionally when small
+        nextZoom = prevZoom < 0.3 ? prevZoom * 1.35 : prevZoom + delta;
+      }
+
+      nextZoom = Math.max(0.02, Math.min(10, nextZoom));
+
+      setPan(prevPan => {
+        if (nextZoom < 0.25) {
+          return {
+            x: prevPan.x * 0.75,
+            y: prevPan.y * 0.75
+          };
+        }
+        return prevPan;
+      });
+
+      return nextZoom;
     });
   };
 
