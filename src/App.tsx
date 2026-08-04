@@ -77,7 +77,7 @@ import {
 
 import { Project, Panel, ComicChapter, Title, Category } from './types';
 import { fileToBase64, cropImage, isBlankImage } from './services/imageProcessing';
-import { detectPanels, generatePanelScripts, generateSpeech, generateSocialMetadata } from './services/gemini';
+import { detectPanels, generatePanelScripts, generateSpeech, generateSocialMetadata, getKeyPoolStats } from './services/gemini';
 import { generateFreeSpeech } from './services/tts';
 import { saveProjectToDB, loadProjectFromDB, exportProjectAsZip, importProjectFromZip } from './services/storage';
 
@@ -1408,7 +1408,24 @@ export default function App() {
         project.settings.language,
         globalContext,
         project.settings.scriptLength,
-        controller.signal
+        controller.signal,
+        (partialBatch) => {
+          setProject(prev => ({
+            ...prev,
+            chapters: prev.chapters.map(c => {
+              if (c.id === currentChapter.id) {
+                return {
+                  ...c,
+                  panels: c.panels.map(p => {
+                    const scriptObj = partialBatch.find((s: any) => s.id === p.id);
+                    return scriptObj ? { ...p, script: scriptObj.script, audio: undefined } : p;
+                  })
+                };
+              }
+              return c;
+            })
+          }));
+        }
       );
       console.log("Received scripts:", scripts);
       
@@ -1419,7 +1436,6 @@ export default function App() {
             return {
               ...c,
               panels: c.panels.map(p => {
-                // Try to find by ID first, then by index if necessary (though service should return IDs)
                 const scriptObj = scripts.find((s: any) => s.id === p.id);
                 return scriptObj ? { ...p, script: scriptObj.script, audio: undefined } : p;
               })
@@ -1432,7 +1448,7 @@ export default function App() {
       setSelectedPanelIds(new Set());
     } catch (error: any) {
       if (error?.name === 'AbortError' || error?.message?.includes('Aborted') || controller.signal.aborted) {
-        toast.info("Script generation canceled.");
+        toast.info("Script generation finished/canceled.");
       } else {
         console.error("Bulk script error:", error?.message || error);
         if (error?.message?.includes('429') || error?.message?.includes('RESOURCE_EXHAUSTED')) {
@@ -1496,7 +1512,24 @@ export default function App() {
         project.settings.language,
         globalContext,
         project.settings.scriptLength,
-        controller.signal
+        controller.signal,
+        (partialBatch) => {
+          setProject(prev => ({
+            ...prev,
+            chapters: prev.chapters.map(c => {
+              if (c.id === currentChapter.id) {
+                return {
+                  ...c,
+                  panels: c.panels.map(p => {
+                    const scriptObj = partialBatch.find((s: any) => s.id === p.id);
+                    return scriptObj ? { ...p, script: scriptObj.script, audio: undefined } : p;
+                  })
+                };
+              }
+              return c;
+            })
+          }));
+        }
       );
       console.log("Received scripts:", scripts);
       
@@ -1518,7 +1551,7 @@ export default function App() {
       toast.success('Scripts generated successfully!');
     } catch (error: any) {
       if (error?.name === 'AbortError' || error?.message?.includes('Aborted') || controller.signal.aborted) {
-        toast.info("Script generation canceled.");
+        toast.info("Script generation finished/canceled.");
       } else {
         console.error("Generate scripts error:", error?.message || error);
         if (error?.message?.includes('429') || error?.message?.includes('RESOURCE_EXHAUSTED')) {
@@ -2132,9 +2165,19 @@ export default function App() {
         newPanels[i] = { ...panel, audio: silentAudio, audioIsFallbackSilence: true };
       }
 
-      // Add a safe gap between requests to avoid rate limits
+      // Save project state progressively as each audio track completes!
+      setProject(prev => {
+        const updated = {
+          ...prev,
+          chapters: prev.chapters.map(c => c.id === chapter.id ? { ...c, panels: [...newPanels] } : c)
+        };
+        saveProjectToDB(updated);
+        return updated;
+      });
+
+      // Add a small safe gap between requests to avoid rate limits
       if (i < newPanels.length - 1) {
-        const gap = isGemini ? 1000 : 500;
+        const gap = isGemini ? 500 : 200;
         await new Promise(resolve => setTimeout(resolve, gap));
       }
     }
@@ -5287,6 +5330,7 @@ pause
           <DialogContent className="bg-background border-none text-foreground max-w-none sm:max-w-none w-screen h-screen flex flex-col p-0 rounded-none overflow-hidden fixed inset-0 translate-x-0 translate-y-0 left-0 top-0">
             {manualSelectionData && (
               <ManualPanelSelector 
+                chapterId={manualSelectionData.chapterId}
                 images={manualSelectionData.pageUrls}
                 initialPageIndex={manualSelectionData.initialPageIndex}
                 initialRects={manualSelectionData.initialRects}
@@ -5419,23 +5463,42 @@ pause
             </DialogHeader>
             
             <div className="space-y-6 py-4 max-h-[70vh] overflow-y-auto pr-2">
-              {/* Gemini API Key */}
-              <div className="space-y-2">
-                <label className="text-[10px] font-bold uppercase tracking-[0.2em] text-foreground/50">Gemini API Key</label>
-                <input 
-                  type="password"
-                  placeholder="Masukkan Gemini API Key Anda"
+              {/* Gemini API Key Pool */}
+              <div className="space-y-3 p-4 bg-foreground/[0.02] border border-border/60 rounded-2xl">
+                <div className="flex items-center justify-between">
+                  <label className="text-[10px] font-bold uppercase tracking-[0.2em] text-foreground/70">
+                    Gemini API Keys (Multi-Key Manager)
+                  </label>
+                  {(() => {
+                    const stats = getKeyPoolStats();
+                    return (
+                      <span className="text-[10px] font-mono px-2.5 py-1 rounded-full bg-blue-500/10 border border-blue-500/20 text-blue-400 font-semibold">
+                        {stats.totalKeys} Key{stats.totalKeys !== 1 ? 's' : ''} Loaded (Active: #{stats.activeKeyIndex})
+                      </span>
+                    );
+                  })()}
+                </div>
+                <textarea 
+                  rows={3}
+                  placeholder="Masukkan 1 atau beberapa Gemini API Key (pisahkan dengan koma atau baris baru)&#10;Contoh:&#10;AIzaSy_Key1&#10;AIzaSy_Key2"
                   value={apiKeyInputVal}
-                  className="w-full bg-background/40 border border-border/50 rounded-xl p-4 text-xs font-mono outline-none focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500/50 text-foreground/80 transition-all placeholder:text-foreground/20"
+                  className="w-full bg-background/40 border border-border/50 rounded-xl p-3 text-xs font-mono outline-none focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500/50 text-foreground/80 transition-all placeholder:text-foreground/20 resize-y"
                   onChange={(e) => {
                     setApiKeyInputVal(e.target.value);
                     localStorage.setItem('panelflow_gemini_api_key', e.target.value);
                     import('./services/gemini').then(m => m.setCustomGeminiApiKey(e.target.value));
                   }}
                 />
-                <p className="text-[9px] text-foreground/30 font-medium leading-relaxed uppercase tracking-wider">
-                  Dibutuhkan untuk deteksi panel bertenaga AI. Dapatkan secara gratis di Google AI Studio.
-                </p>
+                <div className="flex flex-col gap-1">
+                  <p className="text-[9px] text-foreground/40 font-medium leading-relaxed uppercase tracking-wider">
+                    Sistem rotasi otomatis akan beralih ke Key berikutnya secara cepat jika kuota habis (Rate Limit / 429).
+                  </p>
+                  {getKeyPoolStats().hasMultipleKeys && (
+                    <p className="text-[9px] text-green-400 font-bold uppercase tracking-wider flex items-center gap-1">
+                      ✓ Pengganti API Otomatis Aktif ({getKeyPoolStats().totalKeys} API Key siap berotasi)
+                    </p>
+                  )}
+                </div>
               </div>
 
               {/* Speech Voice Engine */}

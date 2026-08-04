@@ -54,7 +54,7 @@ export async function generateFreeSpeech(text: string, language: string = 'Engli
       try {
         const proxyUrl = proxy.fn(googleTtsUrl);
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 4000);
+        const timeoutId = setTimeout(() => controller.abort(), 8000);
 
         const res = await fetch(proxyUrl, { signal: controller.signal });
         clearTimeout(timeoutId);

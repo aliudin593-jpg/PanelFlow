@@ -6,6 +6,8 @@ import { Scissors, Check, X, Plus, ZoomIn, ZoomOut, Maximize, Move, ArrowsUpFrom
 import { detectPanels } from '../services/gemini';
 import { cropImage, isBlankImage } from '../services/imageProcessing';
 
+import { toast } from 'sonner';
+
 interface Rect {
   x: number;
   y: number;
@@ -16,6 +18,7 @@ interface Rect {
 }
 
 interface ManualPanelSelectorProps {
+  chapterId?: string;
   images: string[];
   initialPageIndex?: number;
   initialRects?: { pageIndex: number; rects: Rect[] }[];
@@ -25,10 +28,59 @@ interface ManualPanelSelectorProps {
   globalStartNumber?: number;
 }
 
-export function ManualPanelSelector({ images, initialPageIndex = 0, initialRects = [], onComplete, onCancel, panelNumber, globalStartNumber }: ManualPanelSelectorProps) {
+export function ManualPanelSelector({ chapterId, images, initialPageIndex = 0, initialRects = [], onComplete, onCancel, panelNumber, globalStartNumber }: ManualPanelSelectorProps) {
   const [currentPageIndex, setCurrentPageIndex] = useState(initialPageIndex);
   const [allRects, setAllRects] = useState<{ pageIndex: number; rects: Rect[] }[]>(initialRects);
   const [currentPageRects, setCurrentPageRects] = useState<Rect[]>([]);
+
+  const draftStorageKey = `panelflow_manual_snap_draft_${chapterId || 'global'}`;
+  const [draftRestored, setDraftRestored] = useState(false);
+
+  // Restore draft on mount if available
+  useEffect(() => {
+    try {
+      const savedDraft = localStorage.getItem(draftStorageKey);
+      if (savedDraft) {
+        const parsed = JSON.parse(savedDraft);
+        if (parsed && Array.isArray(parsed.allRects) && parsed.allRects.length > 0) {
+          setAllRects(parsed.allRects);
+          if (typeof parsed.pageIndex === 'number' && parsed.pageIndex < images.length) {
+            setCurrentPageIndex(parsed.pageIndex);
+          }
+          setDraftRestored(true);
+          toast.info("Manual snap draft dipulihkan secara otomatis!", { id: 'manual-snap-draft-restored' });
+        }
+      }
+    } catch (e) {
+      console.error("Failed to restore manual snap draft:", e);
+    }
+  }, [chapterId]);
+
+  // Real-time draft auto-save effect
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      try {
+        const updatedAllRects = [
+          ...allRects.filter(r => r.pageIndex !== currentPageIndex),
+          { pageIndex: currentPageIndex, rects: currentPageRects }
+        ];
+        localStorage.setItem(draftStorageKey, JSON.stringify({
+          pageIndex: currentPageIndex,
+          allRects: updatedAllRects,
+          timestamp: Date.now()
+        }));
+      } catch (e) {
+        console.error("Failed to auto-save manual snap draft:", e);
+      }
+    }, 500);
+    return () => clearTimeout(timer);
+  }, [currentPageRects, allRects, currentPageIndex, draftStorageKey]);
+
+  const clearDraft = () => {
+    try {
+      localStorage.removeItem(draftStorageKey);
+    } catch (e) {}
+  };
   const [currentRect, setCurrentRect] = useState<Rect | null>(null);
   const [isDrawing, setIsDrawing] = useState(false);
   const [isPanning, setIsPanning] = useState(false);
@@ -188,6 +240,7 @@ export function ManualPanelSelector({ images, initialPageIndex = 0, initialRects
     if (currentPageIndex < images.length - 1) {
       setCurrentPageIndex(currentPageIndex + 1);
     } else {
+      clearDraft();
       const finalRects = allRects.filter(r => r.pageIndex !== currentPageIndex);
       onComplete([...finalRects, { pageIndex: currentPageIndex, rects: currentPageRects }], currentPageIndex);
     }
@@ -201,6 +254,7 @@ export function ManualPanelSelector({ images, initialPageIndex = 0, initialRects
   };
 
   const handleFinish = () => {
+    clearDraft();
     const finalRects = allRects.filter(r => r.pageIndex !== currentPageIndex);
     onComplete([...finalRects, { pageIndex: currentPageIndex, rects: currentPageRects }], currentPageIndex);
   };

@@ -1,14 +1,63 @@
 
 import { GoogleGenAI, Type } from "@google/genai";
+import { toast } from "sonner";
 
-let customApiKey = "";
+let customApiKeyInput = "";
+let activeKeyIndex = 0;
 
 export function setCustomGeminiApiKey(key: string) {
-  customApiKey = key;
+  customApiKeyInput = key;
+  activeKeyIndex = 0; // Reset active key index when user updates API keys
+}
+
+export function parseApiKeys(): string[] {
+  const envRaw = process.env.GEMINI_API_KEY || "";
+  const rawInput = customApiKeyInput || envRaw;
+  if (!rawInput.trim()) return [];
+
+  // Split by comma, newline, or semicolon and remove whitespace / empty lines
+  return rawInput
+    .split(/[\n,;]+/)
+    .map(k => k.trim())
+    .filter(k => k.length > 0);
+}
+
+export function getKeyPoolStats() {
+  const keys = parseApiKeys();
+  const currentKey = keys[activeKeyIndex] || "";
+  const maskedKey = currentKey ? `${currentKey.substring(0, 6)}...${currentKey.substring(Math.max(0, currentKey.length - 4))}` : "None";
+  return {
+    totalKeys: keys.length,
+    activeKeyIndex: keys.length > 0 ? activeKeyIndex + 1 : 0,
+    maskedKey,
+    hasMultipleKeys: keys.length > 1
+  };
 }
 
 function getGenAI() {
-  return new GoogleGenAI({ apiKey: customApiKey || process.env.GEMINI_API_KEY || "" });
+  const keys = parseApiKeys();
+  if (keys.length === 0) {
+    return new GoogleGenAI({ apiKey: "" });
+  }
+
+  if (activeKeyIndex >= keys.length) {
+    activeKeyIndex = 0;
+  }
+
+  return new GoogleGenAI({ apiKey: keys[activeKeyIndex] });
+}
+
+function rotateToNextApiKey(): boolean {
+  const keys = parseApiKeys();
+  if (keys.length <= 1) return false;
+
+  const previousKeyNum = activeKeyIndex + 1;
+  activeKeyIndex = (activeKeyIndex + 1) % keys.length;
+  const newKeyNum = activeKeyIndex + 1;
+
+  console.warn(`[API Key Manager] Quota/Rate limit hit on API Key #${previousKeyNum}. Switching automatically to API Key #${newKeyNum} of ${keys.length}.`);
+  toast.warning(`Quota Limit Hit (Key #${previousKeyNum}). Switched to API Key #${newKeyNum}/${keys.length}`, { id: 'api-key-rotation' });
+  return true;
 }
 
 export async function generatePanelScripts(
@@ -16,13 +65,13 @@ export async function generatePanelScripts(
   language: string = 'English',
   globalContext: string = '',
   globalScriptLength: string = 'Normal',
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  onProgress?: (partialScripts: { id: string; script: string }[]) => void
 ) {
   if (!panels.length) return [];
 
-  // Process panels in smaller chunks (e.g., 3 panels per request) to avoid XHR payload size limits
-  // with high-resolution image data.
-  const chunkSize = 3;
+  // Increase chunk size to 5 for faster generation with downscaled images
+  const chunkSize = 5;
   const chunks = [];
   for (let i = 0; i < panels.length; i += chunkSize) {
     chunks.push(panels.slice(i, i + chunkSize));
@@ -47,7 +96,8 @@ export async function generatePanelScripts(
 
   for (const chunk of chunks) {
     if (signal?.aborted) {
-      throw new DOMException("Aborted", "AbortError");
+      console.warn("Script generation cancelled by user signal. Returning partial results completed so far.");
+      break;
     }
 
     // Await downscaling concurrently for the chunk
@@ -95,8 +145,11 @@ export async function generatePanelScripts(
         const text = response.text;
         if (text) {
           try {
-            const parsed = JSON.parse(text);
+            const parsed: { id: string; script: string }[] = JSON.parse(text);
             allResults = allResults.concat(parsed);
+            if (onProgress && parsed.length > 0) {
+              onProgress(parsed);
+            }
           } catch (e) {
             console.error("Failed to parse Gemini script response chunk:", text);
           }
@@ -112,18 +165,39 @@ export async function generatePanelScripts(
 }
 
 
-async function withRetry<T>(operation: () => Promise<T>, maxRetries = 5, baseDelay = 3000): Promise<T> {
+async function withRetry<T>(operation: () => Promise<T>, maxRetries = 10, baseDelay = 3000): Promise<T> {
   let attempt = 0;
+  let keysTriedInRound = 0;
+
   while (attempt < maxRetries) {
     try {
       return await operation();
     } catch (error: any) {
-      if (error?.status === 429 || error?.message?.includes('429') || error?.message?.includes('RESOURCE_EXHAUSTED') || error?.status === 503) {
+      const isRateLimit =
+        error?.status === 429 ||
+        error?.message?.includes('429') ||
+        error?.message?.includes('RESOURCE_EXHAUSTED') ||
+        error?.message?.includes('quota') ||
+        error?.status === 503;
+
+      if (isRateLimit) {
+        const rotated = rotateToNextApiKey();
+        if (rotated) {
+          keysTriedInRound++;
+          const keys = parseApiKeys();
+          // If we haven't tried all keys in the pool yet, retry immediately with the next key!
+          if (keysTriedInRound < keys.length) {
+            console.info(`[API Key Manager] Retrying operation immediately with API Key #${activeKeyIndex + 1}...`);
+            continue;
+          }
+        }
+
         attempt++;
+        keysTriedInRound = 0;
         if (attempt >= maxRetries) throw error;
-        // Escalating delay: 3s, 6s, 12s, 24s ...
-        const delay = baseDelay * Math.pow(2, attempt - 1);
-        console.warn(`Rate limit hit. Retrying in ${delay}ms... (Attempt ${attempt} of ${maxRetries})`);
+
+        const delay = baseDelay * Math.pow(2, Math.min(attempt - 1, 4));
+        console.warn(`[API Key Rate Limit] Retrying in ${delay}ms... (Attempt ${attempt} of ${maxRetries})`);
         await new Promise(resolve => setTimeout(resolve, delay));
       } else {
         throw error;
