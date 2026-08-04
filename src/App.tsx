@@ -77,7 +77,7 @@ import {
 
 import { Project, Panel, ComicChapter, Title, Category } from './types';
 import { fileToBase64, cropImage, isBlankImage } from './services/imageProcessing';
-import { detectPanels, generatePanelScripts, generateSpeech, generateSocialMetadata, getKeyPoolStats } from './services/gemini';
+import { detectPanels, generatePanelScripts, generateSinglePanelScript, generateSpeech, generateSocialMetadata, getKeyPoolStats } from './services/gemini';
 import { generateFreeSpeech } from './services/tts';
 import { saveProjectToDB, loadProjectFromDB, exportProjectAsZip, importProjectFromZip } from './services/storage';
 
@@ -1392,71 +1392,99 @@ export default function App() {
     ).filter(c => c.includes('- ')).join('\n\n');
   };
 
+  const [generatingSingleScriptPanelId, setGeneratingSingleScriptPanelId] = useState<string | null>(null);
+
+  const handleGenerateSinglePanelScript = async (panel: Panel) => {
+    if (!currentChapter) return;
+    setGeneratingSingleScriptPanelId(panel.id);
+    try {
+      const globalContext = buildGlobalContext();
+      const script = await generateSinglePanelScript(
+        { id: panel.id, imageUrl: panel.imageUrl, dialogue: panel.dialogue, context: panel.context, scriptLength: panel.scriptLength },
+        project.settings.language,
+        globalContext,
+        project.settings.scriptLength
+      );
+
+      if (script) {
+        setProject(prev => ({
+          ...prev,
+          chapters: prev.chapters.map(c => {
+            if (c.id === currentChapter.id) {
+              return {
+                ...c,
+                panels: c.panels.map(p => p.id === panel.id ? { ...p, script, audio: undefined } : p)
+              };
+            }
+            return c;
+          })
+        }));
+        toast.success(`Script berhasil dibuat untuk Panel!`);
+      }
+    } catch (error: any) {
+      console.error("Single panel script error:", error);
+      toast.error(`Gagal membuat script: ${error?.message || 'Error'}`);
+    } finally {
+      setGeneratingSingleScriptPanelId(null);
+    }
+  };
+
   const handleBulkScript = async () => {
     if (!currentChapter || selectedPanelIds.size === 0) return;
     setIsProcessing(true);
     const controller = new AbortController();
     setScriptGenerationAbortController(controller);
-    try {
-      const selectedPanels = currentChapter.panels.filter(p => selectedPanelIds.has(p.id));
-      console.log("Generating scripts for panels:", selectedPanels.map(p => p.id));
-      
-      const globalContext = buildGlobalContext();
 
-      const scripts = await generatePanelScripts(
-        selectedPanels.map((p) => ({ id: p.id, imageUrl: p.imageUrl, dialogue: p.dialogue, context: p.context, scriptLength: p.scriptLength })),
-        project.settings.language,
-        globalContext,
-        project.settings.scriptLength,
-        controller.signal,
-        (partialBatch) => {
-          setProject(prev => ({
-            ...prev,
-            chapters: prev.chapters.map(c => {
-              if (c.id === currentChapter.id) {
-                return {
-                  ...c,
-                  panels: c.panels.map(p => {
-                    const scriptObj = partialBatch.find((s: any) => s.id === p.id);
-                    return scriptObj ? { ...p, script: scriptObj.script, audio: undefined } : p;
-                  })
-                };
-              }
-              return c;
-            })
-          }));
+    const selectedPanels = currentChapter.panels.filter(p => selectedPanelIds.has(p.id));
+    toast.info(`Memulai generate script untuk ${selectedPanels.length} panel terpilih...`);
+
+    try {
+      const globalContext = buildGlobalContext();
+      let successCount = 0;
+
+      for (let i = 0; i < selectedPanels.length; i++) {
+        if (controller.signal.aborted) {
+          toast.info("Bulk script generation dihentikan.");
+          break;
         }
-      );
-      console.log("Received scripts:", scripts);
-      
-      setProject(prev => ({
-        ...prev,
-        chapters: prev.chapters.map(c => {
-          if (c.id === currentChapter.id) {
-            return {
-              ...c,
-              panels: c.panels.map(p => {
-                const scriptObj = scripts.find((s: any) => s.id === p.id);
-                return scriptObj ? { ...p, script: scriptObj.script, audio: undefined } : p;
+
+        const panel = selectedPanels[i];
+        toast.info(`Generating script untuk Panel ID #${panel.id.slice(0, 6)} (${i + 1}/${selectedPanels.length})...`, { id: 'bulk-script-progress' });
+
+        try {
+          const generatedScript = await generateSinglePanelScript(
+            { id: panel.id, imageUrl: panel.imageUrl, dialogue: panel.dialogue, context: panel.context, scriptLength: panel.scriptLength },
+            project.settings.language,
+            globalContext,
+            project.settings.scriptLength,
+            controller.signal
+          );
+
+          if (generatedScript) {
+            successCount++;
+            setProject(prev => ({
+              ...prev,
+              chapters: prev.chapters.map(c => {
+                if (c.id === currentChapter.id) {
+                  return {
+                    ...c,
+                    panels: c.panels.map(p => p.id === panel.id ? { ...p, script: generatedScript, audio: undefined } : p)
+                  };
+                }
+                return c;
               })
-            };
+            }));
           }
-          return c;
-        })
-      }));
-      toast.success('Scripts generated for selected panels!');
-      setSelectedPanelIds(new Set());
-    } catch (error: any) {
-      if (error?.name === 'AbortError' || error?.message?.includes('Aborted') || controller.signal.aborted) {
-        toast.info("Script generation finished/canceled.");
-      } else {
-        console.error("Bulk script error:", error?.message || error);
-        if (error?.message?.includes('429') || error?.message?.includes('RESOURCE_EXHAUSTED')) {
-           toast.error("API Quota Exhausted. Please wait a few minutes before trying again.", { duration: 5000 });
-        } else {
-           toast.error(`Failed to generate scripts: ${error?.message || 'Unknown error'}`);
+        } catch (singleErr: any) {
+          console.warn(`Gagal generate script untuk panel ${panel.id}:`, singleErr);
+          toast.warning(`Panel #${panel.id.slice(0, 6)}: Gagal. Melanjutkan ke panel lain...`);
         }
       }
+
+      toast.success(`Selesai membuat script untuk ${successCount}/${selectedPanels.length} panel terpilih!`, { id: 'bulk-script-progress' });
+      setSelectedPanelIds(new Set());
+    } catch (error: any) {
+      console.error("Bulk script error:", error);
     } finally {
       setIsProcessing(false);
       setScriptGenerationAbortController(null);
@@ -1498,68 +1526,58 @@ export default function App() {
   const currentChapter = project.chapters.find(c => c.id === project.currentChapterId);
 
   const handleGenerateScripts = async () => {
-    if (!currentChapter) return;
+    if (!currentChapter || currentChapter.panels.length === 0) return;
     setIsProcessing(true);
     const controller = new AbortController();
     setScriptGenerationAbortController(controller);
-    try {
-      console.log("Generating scripts for all panels in chapter:", currentChapter.id);
-      
-      const globalContext = buildGlobalContext();
+    toast.info(`Memulai generate script satu per satu (${currentChapter.panels.length} panel)...`);
 
-      const scripts = await generatePanelScripts(
-        currentChapter.panels.map(p => ({ id: p.id, imageUrl: p.imageUrl, dialogue: p.dialogue, context: p.context, scriptLength: p.scriptLength })),
-        project.settings.language,
-        globalContext,
-        project.settings.scriptLength,
-        controller.signal,
-        (partialBatch) => {
-          setProject(prev => ({
-            ...prev,
-            chapters: prev.chapters.map(c => {
-              if (c.id === currentChapter.id) {
-                return {
-                  ...c,
-                  panels: c.panels.map(p => {
-                    const scriptObj = partialBatch.find((s: any) => s.id === p.id);
-                    return scriptObj ? { ...p, script: scriptObj.script, audio: undefined } : p;
-                  })
-                };
-              }
-              return c;
-            })
-          }));
+    try {
+      const globalContext = buildGlobalContext();
+      let successCount = 0;
+
+      for (let i = 0; i < currentChapter.panels.length; i++) {
+        if (controller.signal.aborted) {
+          toast.info("Script generation dihentikan oleh pengguna.");
+          break;
         }
-      );
-      console.log("Received scripts:", scripts);
-      
-      setProject(prev => ({
-        ...prev,
-        chapters: prev.chapters.map(c => {
-          if (c.id === currentChapter.id) {
-            return {
-              ...c,
-              panels: c.panels.map(p => {
-                const scriptObj = scripts.find((s: any) => s.id === p.id);
-                return scriptObj ? { ...p, script: scriptObj.script, audio: undefined } : p;
+
+        const panel = currentChapter.panels[i];
+        toast.info(`Generating script untuk Panel #${i + 1}/${currentChapter.panels.length}...`, { id: 'script-progress' });
+
+        try {
+          const generatedScript = await generateSinglePanelScript(
+            { id: panel.id, imageUrl: panel.imageUrl, dialogue: panel.dialogue, context: panel.context, scriptLength: panel.scriptLength },
+            project.settings.language,
+            globalContext,
+            project.settings.scriptLength,
+            controller.signal
+          );
+
+          if (generatedScript) {
+            successCount++;
+            setProject(prev => ({
+              ...prev,
+              chapters: prev.chapters.map(c => {
+                if (c.id === currentChapter.id) {
+                  return {
+                    ...c,
+                    panels: c.panels.map(p => p.id === panel.id ? { ...p, script: generatedScript, audio: undefined } : p)
+                  };
+                }
+                return c;
               })
-            };
+            }));
           }
-          return c;
-        })
-      }));
-      toast.success('Scripts generated successfully!');
-    } catch (error: any) {
-      if (error?.name === 'AbortError' || error?.message?.includes('Aborted') || controller.signal.aborted) {
-        toast.info("Script generation finished/canceled.");
-      } else {
-        console.error("Generate scripts error:", error?.message || error);
-        if (error?.message?.includes('429') || error?.message?.includes('RESOURCE_EXHAUSTED')) {
-           toast.error("API Quota Exhausted. Please wait a few minutes before trying again.", { duration: 5000 });
-        } else {
-           toast.error(`Failed to generate scripts: ${error?.message || 'Unknown error'}`);
+        } catch (singleErr: any) {
+          console.warn(`Gagal membuat script untuk Panel #${i + 1}:`, singleErr);
+          toast.warning(`Panel #${i + 1}: Gagal generate script. Melanjutkan ke panel berikutnya...`);
         }
       }
+
+      toast.success(`Selesai membuat script untuk ${successCount}/${currentChapter.panels.length} panel!`, { id: 'script-progress' });
+    } catch (error: any) {
+      console.error("Generate scripts error:", error);
     } finally {
       setIsProcessing(false);
       setScriptGenerationAbortController(null);
@@ -4269,7 +4287,31 @@ pause
 
                               <div className="space-y-1.5">
                                 <div className="flex items-center justify-between">
-                                  <label className="text-[9px] font-bold uppercase tracking-[0.2em] text-blue-400/60">Narration Script</label>
+                                  <div className="flex items-center gap-2">
+                                    <label className="text-[9px] font-bold uppercase tracking-[0.2em] text-blue-400/60">Narration Script</label>
+                                    <Button
+                                      size="sm"
+                                      variant="ghost"
+                                      disabled={generatingSingleScriptPanelId === panel.id}
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        handleGenerateSinglePanelScript(panel);
+                                      }}
+                                      className="h-5 px-2 bg-blue-600/10 hover:bg-blue-600/20 text-blue-400 border border-blue-500/20 rounded-md text-[8px] font-bold uppercase tracking-wider flex items-center gap-1 cursor-pointer"
+                                    >
+                                      {generatingSingleScriptPanelId === panel.id ? (
+                                        <>
+                                          <Loader2 className="w-2.5 h-2.5 animate-spin" />
+                                          <span>Generating...</span>
+                                        </>
+                                      ) : (
+                                        <>
+                                          <Sparkles className="w-2.5 h-2.5 text-blue-400" />
+                                          <span>AI Script</span>
+                                        </>
+                                      )}
+                                    </Button>
+                                  </div>
                                   <div className="flex items-center gap-1.5 text-[9px] font-mono text-foreground/30">
                                     <Volume2 className="w-2.5 h-2.5" />
                                     <span>{panel.script.length} CHARS</span>

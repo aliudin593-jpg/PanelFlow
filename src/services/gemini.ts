@@ -60,6 +60,48 @@ function rotateToNextApiKey(): boolean {
   return true;
 }
 
+export async function generateSinglePanelScript(
+  panel: { id: string; imageUrl: string; dialogue?: string; context?: string; scriptLength?: string },
+  language: string = 'English',
+  globalContext: string = '',
+  globalScriptLength: string = 'Normal',
+  signal?: AbortSignal
+): Promise<string> {
+  const optimizedData = await downscaleForAI(panel.imageUrl, 768);
+  const data = optimizedData.split(',')[1];
+  
+  let panelLengthInstruction = "Normal (1-3 sentences)";
+  const lengthSetting = panel.scriptLength || globalScriptLength;
+  if (lengthSetting === 'Short') panelLengthInstruction = "Very brief, punchy (1 sentence max)";
+  else if (lengthSetting === 'Detailed') panelLengthInstruction = "Detailed, descriptive (4+ sentences)";
+
+  const prompt = `
+    You are a professional comic scriptwriter and narrator. 
+    Analyze this comic panel illustration. Write a narration script 
+    that describes the action and dialogue in a cinematic way, suitable for a video voiceover.
+    Do NOT include the original text from the comic, just the narration.
+    Write the script in ${language}.
+    Required Script Length: ${panelLengthInstruction}.
+    ${panel.context ? `Panel Context/Lore: ${panel.context}\n` : ''}
+    ${globalContext ? `BACKGROUND LORE & GLOBAL CONTEXT TO REMEMBER:\n${globalContext}\n` : ''}
+  `;
+
+  return withRetry(async () => {
+    const response = await (getGenAI().models.generateContent as any)({
+      model: "gemini-2.5-flash",
+      contents: [{
+        role: 'user',
+        parts: [
+          { text: prompt },
+          { inlineData: { mimeType: "image/jpeg", data } }
+        ]
+      }]
+    }, { signal });
+
+    return response.text?.trim() || "";
+  });
+}
+
 export async function generatePanelScripts(
   panels: { id: string; imageUrl: string; dialogue?: string; context?: string; scriptLength?: string }[], 
   language: string = 'English',
