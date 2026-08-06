@@ -41,7 +41,6 @@ import {
   Sparkles,
   Layers,
   Smartphone,
-  Video,
   FolderDown,
   FolderUp,
   Monitor,
@@ -77,7 +76,7 @@ import {
 
 import { Project, Panel, ComicChapter, Title, Category } from './types';
 import { fileToBase64, cropImage, isBlankImage } from './services/imageProcessing';
-import { detectPanels, generatePanelScripts, generateSinglePanelScript, generateSpeech, generateSocialMetadata, updateTitleMemoryCumulative, getKeyPoolStats } from './services/gemini';
+import { detectPanels, generatePanelScripts, generateSinglePanelScript, generateSpeech, generateSocialMetadata, updateTitleMemoryCumulative, getKeyPoolStats, classifyError } from './services/gemini';
 import { generateFreeSpeech } from './services/tts';
 import { saveProjectToDB, loadProjectFromDB, exportProjectAsZip, importProjectFromZip } from './services/storage';
 
@@ -124,6 +123,62 @@ function SortableItem({ id, children, className }: { id: string, children: React
     <div ref={setNodeRef} style={style} className={className} {...attributes} {...listeners}>
       {children}
     </div>
+  );
+}
+
+interface DebouncedPanelTextareaProps {
+  value: string;
+  onCommit: (newValue: string) => void;
+  placeholder?: string;
+  className?: string;
+  debounceMs?: number;
+}
+
+function DebouncedPanelTextarea({ 
+  value, 
+  onCommit, 
+  placeholder, 
+  className,
+  debounceMs = 400 
+}: DebouncedPanelTextareaProps) {
+  const [localValue, setLocalValue] = useState(value);
+  const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Keep local state in sync if the panel changes externally (e.g. AI script gen)
+  useEffect(() => {
+    setLocalValue(value);
+  }, [value]);
+
+  const handleChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    const newVal = e.target.value;
+    setLocalValue(newVal);
+    if (timeoutRef.current) clearTimeout(timeoutRef.current);
+    timeoutRef.current = setTimeout(() => {
+      onCommit(newVal);
+    }, debounceMs);
+  };
+
+  // Flush pending change immediately on blur, so nothing is lost if user 
+  // clicks away right after typing
+  const handleBlur = () => {
+    if (timeoutRef.current) {
+      clearTimeout(timeoutRef.current);
+      timeoutRef.current = null;
+    }
+    if (localValue !== value) {
+      onCommit(localValue);
+    }
+  };
+
+  return (
+    <textarea
+      value={localValue}
+      onChange={handleChange}
+      onBlur={handleBlur}
+      onMouseDown={(e) => e.stopPropagation()}
+      placeholder={placeholder}
+      className={className}
+    />
   );
 }
 
@@ -1652,6 +1707,7 @@ export default function App() {
       const unscriptedPanels = currentChapter.panels.filter(p => !p.script?.trim());
       const panelsToProcess = unscriptedPanels.length > 0 ? unscriptedPanels : currentChapter.panels;
 
+      console.log("[DEBUG] Global Context sent to AI:", globalContext);
       await generatePanelScripts(
         panelsToProcess,
         project.settings.language,
@@ -1696,479 +1752,7 @@ export default function App() {
     }
   };
 
-  const handleExportVideo = async () => {
-    if (!currentChapter || currentChapter.panels.length === 0) {
-      toast.error("No panels to export. Please add some panels first.");
-      return;
-    }
-    
-    // Create AudioContext immediately to preserve user gesture
-    const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
-    try {
-      await audioCtx.resume();
-    } catch (e) {
-      console.warn("Failed to resume AudioContext early:", e);
-    }
-
-    const { success, updatedChapter } = await ensureAllAudiosGenerated(currentChapter);
-    if (!success) {
-      toast.error("Failed to generate narration audio.");
-      return;
-    }
-
-    setIsProcessing(true);
-    setExportProgress(0);
-    toast.info("Mixing audio and rendering video...");
-
-    try {
-      const dest = audioCtx.createMediaStreamDestination();
-
-      // 1. Load all pre-generated audio tracks into audioDataMap
-      const audioDataMap = new Map<string, ArrayBuffer>();
-      const totalPanels = updatedChapter.panels.length;
-      
-      for (let i = 0; i < updatedChapter.panels.length; i++) {
-        const panel = updatedChapter.panels[i];
-        if (panel.script && panel.audio) {
-          try {
-            const binaryString = atob(panel.audio);
-            const bytes = new Uint8Array(binaryString.length);
-            for (let j = 0; j < binaryString.length; j++) {
-              bytes[j] = binaryString.charCodeAt(j);
-            }
-            audioDataMap.set(panel.id, bytes.buffer);
-          } catch (e: any) {
-            console.error(`Failed to parse audio for panel ${panel.id}:`, e);
-          }
-        }
-        setExportProgress(Math.round(((i + 1) / totalPanels) * 40));
-      }
-
-      toast.info("Narration ready. Mixing audio and rendering video...");
-
-      const canvas = document.createElement('canvas');
-      const ctx = canvas.getContext('2d');
-      if (!ctx) throw new Error("Could not create canvas context");
-
-      // Set dimensions dynamically based on aspect ratio/videoFormat and resolution
-      let width = 1920;
-      let height = 1080;
-      const isVertical = project.settings.videoFormat === 'vertical';
-      const resolution = project.settings.exportResolution || '1080p';
-
-      if (resolution === '720p') {
-        width = isVertical ? 720 : 1280;
-        height = isVertical ? 1280 : 720;
-      } else if (resolution === '4K') {
-        width = isVertical ? 2160 : 3840;
-        height = isVertical ? 3840 : 2160;
-      } else { // 1080p
-        width = isVertical ? 1080 : 1920;
-        height = isVertical ? 1920 : 1080;
-      }
-
-      canvas.width = width;
-      canvas.height = height;
-
-      // Use a higher frame rate for smoother video
-      const stream = canvas.captureStream(30);
-      
-      // Background Music Setup
-      if (project.settings.musicUrl) {
-        try {
-          const musicData = await fetch(project.settings.musicUrl).then(r => r.arrayBuffer());
-          const musicBuffer = await audioCtx.decodeAudioData(musicData);
-          const musicSource = audioCtx.createBufferSource();
-          musicSource.buffer = musicBuffer;
-          musicSource.loop = true;
-          const musicGain = audioCtx.createGain();
-          musicGain.gain.value = project.settings.musicVolume;
-          musicSource.connect(musicGain);
-          musicGain.connect(dest);
-          musicSource.start();
-        } catch (e) {
-          console.error("Failed to load background music:", e);
-        }
-      }
-
-      const combinedStream = new MediaStream([
-        ...stream.getVideoTracks(),
-        ...dest.stream.getAudioTracks()
-      ]);
-
-      const mimeTypes = [
-        'video/webm;codecs=vp9,opus',
-        'video/webm;codecs=vp8,opus',
-        'video/webm',
-        'video/mp4'
-      ];
-      let selectedMimeType = '';
-      for (const type of mimeTypes) {
-        if (MediaRecorder.isTypeSupported(type)) {
-          selectedMimeType = type;
-          break;
-        }
-      }
-
-      if (!selectedMimeType) throw new Error("No supported video format found in your browser.");
-
-      const mediaRecorder = new MediaRecorder(combinedStream, {
-        mimeType: selectedMimeType,
-        videoBitsPerSecond: 8000000 // 8Mbps for high quality
-      });
-
-      const chunks: Blob[] = [];
-      mediaRecorder.ondataavailable = (e) => {
-        if (e.data.size > 0) chunks.push(e.data);
-      };
-      
-      const exportPromise = new Promise<Blob>((resolve, reject) => {
-        mediaRecorder.onstop = () => resolve(new Blob(chunks, { type: selectedMimeType }));
-        mediaRecorder.onerror = (e) => reject(e);
-      });
-
-      mediaRecorder.start(100); // Collect data every 100ms
-
-      const drawTextWithWrappingAndStroke = (text: string, x: number, y: number, maxWidth: number, lineHeight: number) => {
-        ctx.save();
-        ctx.font = 'bold 44px "Inter", "Arial", sans-serif';
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'bottom';
-        
-        ctx.strokeStyle = '#000000';
-        ctx.lineWidth = 12;
-        ctx.lineJoin = 'round';
-        ctx.fillStyle = '#FFFFFF';
-
-        const words = text.split(' ');
-        const lines: string[] = [];
-        let currentLine = '';
-
-        for (let j = 0; j < words.length; j++) {
-          const testLine = currentLine ? currentLine + ' ' + words[j] : words[j];
-          const metrics = ctx.measureText(testLine);
-          if (metrics.width > maxWidth && currentLine) {
-            lines.push(currentLine);
-            currentLine = words[j];
-          } else {
-            currentLine = testLine;
-          }
-        }
-        if (currentLine) {
-          lines.push(currentLine);
-        }
-
-        const startY = y - (lines.length - 1) * lineHeight;
-
-        for (let k = 0; k < lines.length; k++) {
-          const lineY = startY + (k * lineHeight);
-          ctx.strokeText(lines[k], x, lineY);
-          ctx.fillText(lines[k], x, lineY);
-        }
-        ctx.restore();
-      };
-
-      const drawImageWithBlurBackground = (
-        ctx: CanvasRenderingContext2D,
-        img: HTMLImageElement,
-        blurredBgCanvas: HTMLCanvasElement | null,
-        opacity: number = 1,
-        scaleFactor: number = 1,
-        offsetX: number = 0,
-        offsetY: number = 0
-      ) => {
-        ctx.save();
-        ctx.globalAlpha = opacity;
-
-        // 1. Draw the pre-rendered blurred background
-        if (blurredBgCanvas) {
-          ctx.drawImage(blurredBgCanvas, 0, 0, canvas.width, canvas.height);
-        } else {
-          ctx.fillStyle = '#12131a';
-          ctx.fillRect(0, 0, canvas.width, canvas.height);
-        }
-
-        // 2. Draw centered image with a subtle, highly performant drop shadow
-        const scale = Math.min(canvas.width / img.width, canvas.height / img.height) * scaleFactor;
-        const dw = img.width * scale;
-        const dh = img.height * scale;
-        const x = (canvas.width / 2) - (dw / 2) + offsetX;
-        const y = (canvas.height / 2) - (dh / 2) + offsetY;
-        
-        ctx.shadowColor = 'rgba(0, 0, 0, 0.55)';
-        ctx.shadowBlur = 15;
-        ctx.shadowOffsetX = 0;
-        ctx.shadowOffsetY = 6;
-
-        ctx.drawImage(img, x, y, dw, dh);
-        ctx.restore();
-      };
-
-      const drawTransitionFrame = (
-        ctx: CanvasRenderingContext2D,
-        prevImg: HTMLImageElement | null,
-        prevBgCanvas: HTMLCanvasElement | null,
-        currentImg: HTMLImageElement,
-        currentBgCanvas: HTMLCanvasElement | null,
-        style: string,
-        t: number,
-        scriptText?: string
-      ) => {
-        // Clear background
-        ctx.fillStyle = '#12131a';
-        ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-        if (!prevImg) {
-          // First image transition (fade & zoom in from background/black)
-          const opacity = t;
-          const scale = 0.95 + 0.05 * t;
-          drawImageWithBlurBackground(ctx, currentImg, currentBgCanvas, opacity, scale, 0, 0);
-        } else {
-          switch (style) {
-            case 'fade':
-              // Fade out old, fade in new
-              drawImageWithBlurBackground(ctx, prevImg, prevBgCanvas, 1 - t, 1, 0, 0);
-              drawImageWithBlurBackground(ctx, currentImg, currentBgCanvas, t, 1, 0, 0);
-              break;
-            case 'zoom-in':
-              drawImageWithBlurBackground(ctx, prevImg, prevBgCanvas, 1 - t, 1 + t * 0.1, 0, 0);
-              drawImageWithBlurBackground(ctx, currentImg, currentBgCanvas, t, 0.85 + t * 0.15, 0, 0);
-              break;
-            case 'zoom-out':
-              drawImageWithBlurBackground(ctx, prevImg, prevBgCanvas, 1 - t, 1.0 - t * 0.1, 0, 0);
-              drawImageWithBlurBackground(ctx, currentImg, currentBgCanvas, t, 1.15 - t * 0.15, 0, 0);
-              break;
-            case 'slide-left':
-              drawImageWithBlurBackground(ctx, prevImg, prevBgCanvas, 1 - t, 1, -canvas.width * t, 0);
-              drawImageWithBlurBackground(ctx, currentImg, currentBgCanvas, t, 1, canvas.width * (1 - t), 0);
-              break;
-            case 'slide-right':
-              drawImageWithBlurBackground(ctx, prevImg, prevBgCanvas, 1 - t, 1, canvas.width * t, 0);
-              drawImageWithBlurBackground(ctx, currentImg, currentBgCanvas, t, 1, -canvas.width * (1 - t), 0);
-              break;
-            case 'slide-up':
-              drawImageWithBlurBackground(ctx, prevImg, prevBgCanvas, 1 - t, 1, 0, -canvas.height * t);
-              drawImageWithBlurBackground(ctx, currentImg, currentBgCanvas, t, 1, 0, canvas.height * (1 - t));
-              break;
-            case 'slide-down':
-              drawImageWithBlurBackground(ctx, prevImg, prevBgCanvas, 1 - t, 1, 0, canvas.height * t);
-              drawImageWithBlurBackground(ctx, currentImg, currentBgCanvas, t, 1, 0, -canvas.height * (1 - t));
-              break;
-            default:
-              drawImageWithBlurBackground(ctx, currentImg, currentBgCanvas, t, 1, 0, 0);
-              break;
-          }
-        }
-
-        if (scriptText && scriptText.trim()) {
-          const scale = Math.min(canvas.width / currentImg.width, canvas.height / currentImg.height);
-          const dw = currentImg.width * scale;
-          const dh = currentImg.height * scale;
-          const y = (canvas.height / 2) - (dh / 2);
-          
-          const maxWidth = Math.max(canvas.width * 0.75, dw - 60);
-          const subY = Math.min(canvas.height - 120, (y + dh) - 45);
-          drawTextWithWrappingAndStroke(scriptText.trim(), canvas.width / 2, subY, maxWidth, 55);
-        }
-      };
-
-      const drawFrame = (img: HTMLImageElement, bgCanvas: HTMLCanvasElement | null, scriptText?: string) => {
-        drawImageWithBlurBackground(ctx, img, bgCanvas, 1, 1, 0, 0);
-        if (scriptText && scriptText.trim()) {
-          const scale = Math.min(canvas.width / img.width, canvas.height / img.height);
-          const dw = img.width * scale;
-          const dh = img.height * scale;
-          const y = (canvas.height / 2) - (dh / 2);
-          const maxWidth = Math.max(canvas.width * 0.75, dw - 60);
-          const subY = Math.min(canvas.height - 120, (y + dh) - 45);
-          drawTextWithWrappingAndStroke(scriptText.trim(), canvas.width / 2, subY, maxWidth, 55);
-        }
-      };
-
-      // Map to hold pre-rendered blurred background canvases for ultra-fast render loop performance
-      const blurredBackgroundsMap = new Map<string, HTMLCanvasElement>();
-
-      let prevImg: HTMLImageElement | null = null;
-      let prevBgCanvas: HTMLCanvasElement | null = null;
-
-      for (let i = 0; i < currentChapter.panels.length; i++) {
-        const panel = currentChapter.panels[i];
-        const img = new Image();
-        img.crossOrigin = "anonymous";
-        img.src = panel.imageUrl;
-        await new Promise((resolve, reject) => { 
-          img.onload = resolve; 
-          img.onerror = reject;
-        });
-
-        // Pre-render blurred background canvas for this panel
-        try {
-          const bgCanvas = document.createElement('canvas');
-          // Downsample background to 225x400 for vertical layout OR 400x225 for landscape for instant processing
-          bgCanvas.width = isVertical ? 225 : 400;
-          bgCanvas.height = isVertical ? 400 : 225;
-          const bgCtx = bgCanvas.getContext('2d');
-          if (bgCtx) {
-            bgCtx.imageSmoothingEnabled = true;
-            try {
-              bgCtx.filter = 'blur(3.5px)'; // Reduced blur radius for dynamic clarity and recognizable artwork
-            } catch (e) {}
-            
-            const bgScale = Math.max(bgCanvas.width / img.width, bgCanvas.height / img.height) * 1.15;
-            const bgW = img.width * bgScale;
-            const bgH = img.height * bgScale;
-            const bgX = (bgCanvas.width - bgW) / 2;
-            const bgY = (bgCanvas.height - bgH) / 2;
-            bgCtx.drawImage(img, bgX, bgY, bgW, bgH);
-            
-            try {
-              bgCtx.filter = 'none';
-            } catch (e) {}
-            
-            // Draw lighter semi-transparent overlay to ensure clear and bright background representation
-            bgCtx.fillStyle = 'rgba(0, 0, 0, 0.23)';
-            bgCtx.fillRect(0, 0, bgCanvas.width, bgCanvas.height);
-          }
-          blurredBackgroundsMap.set(panel.id, bgCanvas);
-        } catch (err) {
-          console.error("Failed to generate blurred background for panel:", panel.id, err);
-        }
-
-        const currentBgCanvas = blurredBackgroundsMap.get(panel.id) || null;
-
-        // PowerPoint-like sequential styles
-        const transitionStyles = ['fade', 'slide-left', 'slide-right', 'zoom-in', 'slide-up', 'zoom-out', 'slide-down'];
-        const transitionStyle = transitionStyles[i % transitionStyles.length];
-
-        const audioData = audioDataMap.get(panel.id);
-        let duration = 2.0; // Default 2 seconds if no audio
-
-        // Keep drawing a tiny invisible pixel to keep MediaRecorder alive during quiet times
-        const keepAliveInterval = setInterval(() => {
-          ctx.fillStyle = `rgba(255,255,255,0.001)`;
-          ctx.fillRect(0,0,1,1);
-        }, 50);
-
-        if (audioData) {
-          try {
-            const audioBuffer = await audioCtx.decodeAudioData(audioData.slice(0));
-            const source = audioCtx.createBufferSource();
-            source.buffer = audioBuffer;
-            
-            const gainNode = audioCtx.createGain();
-            gainNode.gain.value = 1.0;
-            source.connect(gainNode);
-            gainNode.connect(dest);
-            
-            duration = audioBuffer.duration / project.settings.globalSpeed;
-            source.playbackRate.value = project.settings.globalSpeed;
-            
-            source.start();
-
-            // Run Transition Animation
-            const transitionDuration = Math.min(0.6, duration * 0.4);
-            const fps = 30;
-            const totalTransitionFrames = Math.round(transitionDuration * fps);
-            const frameInterval = 1000 / fps;
-            const startTime = Date.now();
-
-            for (let f = 0; f <= totalTransitionFrames; f++) {
-              const t = f / totalTransitionFrames;
-              drawTransitionFrame(ctx, prevImg, prevBgCanvas, img, currentBgCanvas, transitionStyle, t, panel.script);
-              await new Promise(resolve => setTimeout(resolve, frameInterval));
-            }
-
-            // Lock stable frame
-            drawTransitionFrame(ctx, prevImg, prevBgCanvas, img, currentBgCanvas, transitionStyle, 1.0, panel.script);
-
-            // Wait until audio finished playing
-            const elapsed = (Date.now() - startTime) / 1000;
-            const remaining = duration - elapsed;
-            if (remaining > 0) {
-              await new Promise(resolve => setTimeout(resolve, remaining * 1000));
-            }
-          } catch (e) {
-            console.error("Audio decode error:", e);
-            // Fallback render loop transitions
-            const transitionDuration = Math.min(0.6, duration * 0.4);
-            const fps = 30;
-            const totalTransitionFrames = Math.round(transitionDuration * fps);
-            const frameInterval = 1000 / fps;
-            const startTime = Date.now();
-
-            for (let f = 0; f <= totalTransitionFrames; f++) {
-              const t = f / totalTransitionFrames;
-              drawTransitionFrame(ctx, prevImg, prevBgCanvas, img, currentBgCanvas, transitionStyle, t, panel.script);
-              await new Promise(resolve => setTimeout(resolve, frameInterval));
-            }
-
-            drawTransitionFrame(ctx, prevImg, prevBgCanvas, img, currentBgCanvas, transitionStyle, 1.0, panel.script);
-
-            const elapsed = (Date.now() - startTime) / 1000;
-            const remaining = duration - elapsed;
-            if (remaining > 0) {
-              await new Promise(resolve => setTimeout(resolve, remaining * 1000));
-            }
-          }
-        } else {
-          // Standard animated playback fallback transition
-          const transitionDuration = Math.min(0.6, duration * 0.4);
-          const fps = 30;
-          const totalTransitionFrames = Math.round(transitionDuration * fps);
-          const frameInterval = 1000 / fps;
-          const startTime = Date.now();
-
-          for (let f = 0; f <= totalTransitionFrames; f++) {
-            const t = f / totalTransitionFrames;
-            drawTransitionFrame(ctx, prevImg, prevBgCanvas, img, currentBgCanvas, transitionStyle, t, panel.script);
-            await new Promise(resolve => setTimeout(resolve, frameInterval));
-          }
-
-          drawTransitionFrame(ctx, prevImg, prevBgCanvas, img, currentBgCanvas, transitionStyle, 1.0, panel.script);
-
-          const elapsed = (Date.now() - startTime) / 1000;
-          const remaining = duration - elapsed;
-          if (remaining > 0) {
-            await new Promise(resolve => setTimeout(resolve, remaining * 1000));
-          }
-        }
-
-        clearInterval(keepAliveInterval);
-        prevImg = img;
-        prevBgCanvas = currentBgCanvas;
-        setExportProgress(40 + Math.round(((i + 1) / totalPanels) * 60));
-      }
-
-      // Finalize recording
-      await new Promise(resolve => setTimeout(resolve, 500));
-      mediaRecorder.stop();
-      await audioCtx.close();
-      
-      const videoBlob = await exportPromise;
-      const url = URL.createObjectURL(videoBlob);
-      const a = document.createElement('a');
-      a.href = url;
-      const extension = selectedMimeType.includes('mp4') ? 'mp4' : 'webm';
-      a.download = `${project.name.replace(/\s+/g, '_')}_export.${extension}`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      
-      toast.success("Video exported successfully!");
-      confetti({
-        particleCount: 150,
-        spread: 70,
-        origin: { y: 0.6 },
-        colors: ['#3b82f6', '#ffffff', '#60a5fa']
-      });
-    } catch (error: any) {
-      console.error("Export error:", error);
-      toast.error("Failed to export video: " + error.message);
-    } finally {
-      setIsProcessing(false);
-      setExportProgress(0);
-    }
-  };  const getAudioExtension = (base64: string): 'wav' | 'mp3' => {
+  const getAudioExtension = (base64: string): 'wav' | 'mp3' => {
     return 'mp3';
   };
 
@@ -2274,9 +1858,11 @@ export default function App() {
               } catch (fallbackErr) {}
             }
 
-            const isRateLimit = err?.status === 429 || err?.message?.includes('429') || err?.message?.includes('RESOURCE_EXHAUSTED');
+            const { classification, retryAfterMs } = classifyError(err);
             if (attempt < retries - 1) {
-              const currentDelay = isRateLimit ? delay * 2 : delay;
+              const currentDelay = classification !== 'not-rate-limit' 
+                ? (retryAfterMs ?? delay * 2) 
+                : delay;
               await new Promise(resolve => setTimeout(resolve, currentDelay));
               delay *= 2;
             }
@@ -3123,18 +2709,6 @@ pause
                     </DropdownMenuContent>
                   </DropdownMenu>
                 )}
-                <Button
-                  onClick={handleExportVideo}
-                  disabled={isProcessing || !currentChapter || currentChapter.panels.some(p => !p.script.trim())}
-                  className="bg-blue-600 hover:bg-blue-700 text-foreground font-bold px-8 h-11 rounded-2xl shadow-xl shadow-blue-500/20 transition-all hover:scale-[1.02] active:scale-[0.98]"
-                >
-                  {isProcessing ? (
-                    <div className="flex items-center gap-2">
-                      <Loader2 className="w-4 h-4 animate-spin" />
-                      <span>Exporting...</span>
-                    </div>
-                  ) : 'Export Video'}
-                </Button>
               </div>
             </div>
           </div>
@@ -4400,11 +3974,9 @@ pause
                                 <div className="flex items-center justify-between">
                                   <label className="text-[9px] font-bold uppercase tracking-[0.2em] text-purple-400/60">Context & Characters</label>
                                 </div>
-                                <textarea 
+                                <DebouncedPanelTextarea 
                                   value={panel.context || ''}
-                                  onMouseDown={(e) => e.stopPropagation()}
-                                  onChange={(e) => {
-                                    const newContext = e.target.value;
+                                  onCommit={(newContext) => {
                                     setProject(prev => ({
                                       ...prev,
                                       chapters: prev.chapters.map(c => {
@@ -4455,11 +4027,9 @@ pause
                                     <span>{(panel.script || '').length} CHARS</span>
                                   </div>
                                 </div>
-                                <textarea 
+                                <DebouncedPanelTextarea 
                                   value={panel.script || ''}
-                                  onMouseDown={(e) => e.stopPropagation()}
-                                  onChange={(e) => {
-                                    const newScript = e.target.value;
+                                  onCommit={(newScript) => {
                                     setProject(prev => ({
                                       ...prev,
                                       chapters: prev.chapters.map(c => {
@@ -5041,15 +4611,6 @@ pause
                         <Download className="w-6 h-6 mr-2" /> Download FFmpeg
                       </Button>
                     )}
-                    <Button 
-                      onClick={handleExportVideo}
-                      disabled={isProcessing || !currentChapter || currentChapter.panels.some(p => !p.script.trim())}
-                      variant="outline" 
-                      size="lg"
-                      className="h-16 px-10 rounded-full border-border bg-foreground/5 hover:bg-foreground/10 text-lg font-bold"
-                    >
-                      <Download className="w-6 h-6 mr-2" /> {isProcessing ? 'Exporting...' : 'Export Video'}
-                    </Button>
                   </div>
 
                   {currentChapter && currentChapter.panels.length > 0 && (

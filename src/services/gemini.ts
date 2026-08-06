@@ -1,75 +1,207 @@
-
 import { GoogleGenAI, Type } from "@google/genai";
 import { toast } from "sonner";
 
+// ============================================================================
+// API KEY POOL — per-key state instead of one shared mutable pointer.
+//
+// Why this changed from the previous version:
+// - The old code kept a single `activeKeyIndex` + `exhaustedKeysSet` at module
+//   scope and mutated them from inside concurrent async calls (e.g. the 3-way
+//   parallel TTS batch in App.tsx). Two requests hitting 429 at nearly the
+//   same time could both call rotateToNextApiKey() and stomp on each other's
+//   rotation, or double-skip a healthy key.
+// - Keeping state PER KEY (rather than a single "current index") means each
+//   call just asks "which keys are usable right now?" and picks one. That
+//   question is safe to ask concurrently — nothing needs to be swapped out
+//   from under an in-flight request.
+// ============================================================================
+
+type KeyState = {
+  key: string;
+  dailyExhausted: boolean;      // true only when the API explicitly confirms a daily/per-day quota failure
+  rpmCooldownUntil: number;     // epoch ms; key is skipped until this passes (short-lived, per-minute limit)
+};
+
 let customApiKeyInput = "";
-let activeKeyIndex = 0;
-const exhaustedKeysSet = new Set<string>();
+let keyStates: Map<string, KeyState> = new Map();
+let roundRobinCursor = 0;
 
 export function setCustomGeminiApiKey(key: string) {
   customApiKeyInput = key;
-  activeKeyIndex = 0;
-  exhaustedKeysSet.clear();
+  keyStates = new Map();
+  roundRobinCursor = 0;
+}
+
+function getRawKeyList(): string[] {
+  const envRaw = (typeof process !== 'undefined' ? process.env?.GEMINI_API_KEY : '') || "";
+  const rawInput = customApiKeyInput || envRaw;
+  if (!rawInput.trim()) return [];
+  return rawInput
+    .split(/[\n,;]+/)
+    .map(k => k.trim())
+    .filter(k => k.length >= 15);
+}
+
+function ensureKeyStates(): KeyState[] {
+  const raw = getRawKeyList();
+  // Sync keyStates map with the current raw key list (handles keys being added/edited live)
+  const currentKeys = new Set(raw);
+  for (const existingKey of keyStates.keys()) {
+    if (!currentKeys.has(existingKey)) keyStates.delete(existingKey);
+  }
+  for (const k of raw) {
+    if (!keyStates.has(k)) {
+      keyStates.set(k, { key: k, dailyExhausted: false, rpmCooldownUntil: 0 });
+    }
+  }
+  return raw.map(k => keyStates.get(k)!);
+}
+
+/** Keys that are neither daily-exhausted nor currently in an RPM cooldown window. */
+function getAvailableKeyStates(): KeyState[] {
+  const now = Date.now();
+  const all = ensureKeyStates();
+  const available = all.filter(s => !s.dailyExhausted && s.rpmCooldownUntil <= now);
+  // If everything is cooling down / exhausted, fall back to the full list rather than failing outright —
+  // an expired cooldown will resolve itself, and we'd rather retry than hard-stop.
+  return available.length > 0 ? available : all;
 }
 
 export function markKeyAsExhausted(key: string) {
-  if (key) {
-    exhaustedKeysSet.add(key);
-    console.warn(`[API Key Manager] API Key ${key.substring(0, 6)}... marked as EXHAUSTED for the session.`);
+  const state = keyStates.get(key);
+  if (state) {
+    state.dailyExhausted = true;
+    console.warn(`[API Key Manager] Key ${key.substring(0, 6)}... marked EXHAUSTED (daily quota) for this session.`);
+  }
+}
+
+function putKeyInCooldown(key: string, cooldownMs: number) {
+  const state = keyStates.get(key);
+  if (state) {
+    state.rpmCooldownUntil = Date.now() + cooldownMs;
   }
 }
 
 export function parseApiKeys(): string[] {
-  const envRaw = process.env.GEMINI_API_KEY || "";
-  const rawInput = customApiKeyInput || envRaw;
-  if (!rawInput.trim()) return [];
-
-  // Split by comma, newline, or semicolon and filter out invalid tokens
-  const validKeys = rawInput
-    .split(/[\n,;]+/)
-    .map(k => k.trim())
-    .filter(k => k.length >= 15);
-
-  const activeKeys = validKeys.filter(k => !exhaustedKeysSet.has(k));
-  return activeKeys.length > 0 ? activeKeys : validKeys;
+  return getRawKeyList();
 }
 
 export function getKeyPoolStats() {
-  const keys = parseApiKeys();
-  const currentKey = keys[activeKeyIndex] || "";
-  const maskedKey = currentKey ? `${currentKey.substring(0, 6)}...${currentKey.substring(Math.max(0, currentKey.length - 4))}` : "None";
+  const all = ensureKeyStates();
+  const available = getAvailableKeyStates();
+  const currentKey = available[0]?.key || all[0]?.key || "";
+  const maskedKey = currentKey
+    ? `${currentKey.substring(0, 6)}...${currentKey.substring(Math.max(0, currentKey.length - 4))}`
+    : "None";
   return {
-    totalKeys: keys.length,
-    activeKeyIndex: keys.length > 0 ? activeKeyIndex + 1 : 0,
+    totalKeys: all.length,
+    activeKeyIndex: all.length > 0 ? all.findIndex(s => s.key === currentKey) + 1 : 0,
+    availableKeys: available.length,
     maskedKey,
-    hasMultipleKeys: keys.length > 1
+    hasMultipleKeys: all.length > 1
   };
 }
 
-function getGenAI() {
-  const keys = parseApiKeys();
-  if (keys.length === 0) {
-    return new GoogleGenAI({ apiKey: "" });
-  }
-
-  if (activeKeyIndex >= keys.length) {
-    activeKeyIndex = 0;
-  }
-
-  return new GoogleGenAI({ apiKey: keys[activeKeyIndex] });
+/** Picks the next usable key in round-robin order among currently-available keys. */
+function pickNextKey(): string | null {
+  const available = getAvailableKeyStates();
+  if (available.length === 0) return null;
+  roundRobinCursor = (roundRobinCursor + 1) % available.length;
+  return available[roundRobinCursor % available.length].key;
 }
 
-function rotateToNextApiKey(): boolean {
-  const keys = parseApiKeys();
-  if (keys.length <= 1) return false;
+function getGenAI(forceKey?: string) {
+  const key = forceKey ?? pickNextKey() ?? "";
+  return { client: new GoogleGenAI({ apiKey: key }), key };
+}
 
-  const previousKeyNum = activeKeyIndex + 1;
-  activeKeyIndex = (activeKeyIndex + 1) % keys.length;
-  const newKeyNum = activeKeyIndex + 1;
+// ============================================================================
+// ERROR CLASSIFICATION
+//
+// Gemini uses HTTP 429 / RESOURCE_EXHAUSTED for BOTH per-minute (RPM) and
+// per-day (RPD) limits. Relying only on message-string matching is fragile —
+// Google can change wording, and the generic "You exceeded your current
+// quota, please check your plan and billing details" message (which is very
+// common) contains neither "daily" nor "per-day".
+//
+// Prefer structured error details when available: Gemini/Google API errors
+// typically carry `error.details` (an array) with an entry of type
+// `type.googleapis.com/google.rpc.QuotaFailure`, whose `violations[].quotaId`
+// names the specific limit, e.g. "GenerateRequestsPerDayPerProjectPerModel"
+// vs "GenerateRequestsPerMinutePerProjectPerModel". If that's present we
+// trust it over any text heuristic.
+// ============================================================================
 
-  console.warn(`[API Key Manager] Quota/Rate limit hit on API Key #${previousKeyNum}. Switching automatically to API Key #${newKeyNum} of ${keys.length}.`);
-  toast.warning(`Quota Limit Hit (Key #${previousKeyNum}). Switched to API Key #${newKeyNum}/${keys.length}`, { id: 'api-key-rotation' });
-  return true;
+export type QuotaClassification = 'daily' | 'per-minute' | 'unknown-rate-limit' | 'not-rate-limit';
+
+export function classifyError(error: any): { classification: QuotaClassification; retryAfterMs: number | null } {
+  const status = error?.status ?? error?.code;
+  const httpStatus = error?.response?.status ?? error?.status;
+  const errMsg = String(error?.message || '').toLowerCase();
+
+  const isRateLimitStatus =
+    status === 429 || httpStatus === 429 ||
+    errMsg.includes('429') ||
+    errMsg.includes('resource_exhausted') ||
+    status === 503 || httpStatus === 503;
+
+  // 1. Try structured details first (most reliable)
+  const details: any[] =
+    error?.details ||
+    error?.error?.details ||
+    error?.response?.data?.error?.details ||
+    [];
+
+  let retryAfterMs: number | null = null;
+  let classification: QuotaClassification = isRateLimitStatus ? 'unknown-rate-limit' : 'not-rate-limit';
+
+  if (Array.isArray(details)) {
+    for (const d of details) {
+      const type = String(d?.['@type'] || '');
+      if (type.includes('QuotaFailure')) {
+        const violations = d?.violations || [];
+        for (const v of violations) {
+          const quotaId = String(v?.quotaId || v?.quota_metric || '').toLowerCase();
+          if (quotaId.includes('perday') || quotaId.includes('per_day') || quotaId.includes('daily')) {
+            classification = 'daily';
+          } else if (quotaId.includes('perminute') || quotaId.includes('per_minute')) {
+            classification = classification === 'daily' ? classification : 'per-minute';
+          }
+        }
+      }
+      if (type.includes('RetryInfo')) {
+        const delayStr = String(d?.retryDelay || ''); // e.g. "23s"
+        const match = delayStr.match(/(\d+(\.\d+)?)s/);
+        if (match) retryAfterMs = Math.round(parseFloat(match[1]) * 1000);
+      }
+    }
+  }
+
+  // 2. Respect an explicit Retry-After header if the SDK surfaces one
+  const retryAfterHeader = error?.response?.headers?.['retry-after'] ?? error?.headers?.['retry-after'];
+  if (retryAfterMs === null && retryAfterHeader) {
+    const asSeconds = parseInt(String(retryAfterHeader), 10);
+    if (!isNaN(asSeconds)) retryAfterMs = asSeconds * 1000;
+  }
+
+  // 3. Fall back to string heuristics ONLY if structured details didn't resolve it
+  if (classification === 'unknown-rate-limit') {
+    const dailyPatterns = ['daily', 'per-day', 'per day', 'quotaexceeded', 'requests per day'];
+    const minutePatterns = ['per minute', 'per-minute', 'rpm', 'requests per minute'];
+    if (dailyPatterns.some(p => errMsg.includes(p))) {
+      classification = 'daily';
+    } else if (minutePatterns.some(p => errMsg.includes(p))) {
+      classification = 'per-minute';
+    }
+    // If we truly can't tell, treat as per-minute (safer default: don't
+    // permanently kill a key on ambiguous evidence — worst case it just
+    // gets retried after a cooldown instead of being nuked for the session).
+    else if (isRateLimitStatus) {
+      classification = 'per-minute';
+    }
+  }
+
+  return { classification, retryAfterMs };
 }
 
 export function fastCompressForAI(
@@ -81,7 +213,6 @@ export function fastCompressForAI(
   }
 
   return new Promise((resolve) => {
-    // 500ms fail-safe timer for instant execution
     const timer = setTimeout(() => {
       let rawData = imageUrl;
       if (rawData.includes(',')) rawData = rawData.split(',')[1];
@@ -114,7 +245,6 @@ export function fastCompressForAI(
           const ctx = canvas.getContext('2d');
           if (ctx) {
             ctx.drawImage(img, 0, 0, width, height);
-            // 55% JPEG compression = ultra-lightweight ~15KB per image payload!
             const dataUrl = canvas.toDataURL('image/jpeg', 0.55);
             const base64 = dataUrl.includes(',') ? dataUrl.split(',')[1] : dataUrl;
             resolve({ data: base64, mimeType: 'image/jpeg' });
@@ -158,7 +288,6 @@ export async function generateSinglePanelScript(
   }
 
   const { data, mimeType } = await fastCompressForAI(panel.imageUrl, 360);
-
   if (!data) {
     console.warn("Empty image data for panel:", panel.id);
     return "";
@@ -180,37 +309,24 @@ export async function generateSinglePanelScript(
     ${globalContext ? `BACKGROUND LORE & GLOBAL CONTEXT TO REMEMBER:\n${globalContext}\n` : ''}
   `;
 
-  const modelsToTry = ["gemini-2.5-flash"];
+  return withRetry(async (client) => {
+    const response = await (client.models.generateContent as any)({
+      model: "gemini-2.5-flash",
+      contents: [{
+        role: 'user',
+        parts: [
+          { text: prompt },
+          { inlineData: { mimeType, data } }
+        ]
+      }]
+    }, { signal });
 
-  for (const modelName of modelsToTry) {
-    try {
-      return await withRetry(async () => {
-        const response = await (getGenAI().models.generateContent as any)({
-          model: modelName,
-          contents: [{
-            role: 'user',
-            parts: [
-              { text: prompt },
-              { inlineData: { mimeType, data } }
-            ]
-          }]
-        }, { signal });
-
-        return response.text?.trim() || "";
-      });
-    } catch (err: any) {
-      console.warn(`[Script Generator] Model ${modelName} failed for panel ${panel.id}:`, err);
-      if (modelName === modelsToTry[modelsToTry.length - 1]) {
-        throw err;
-      }
-    }
-  }
-
-  return "";
+    return response.text?.trim() || "";
+  });
 }
 
 export async function generatePanelScripts(
-  panels: { id: string; imageUrl: string; dialogue?: string; context?: string; scriptLength?: string }[], 
+  panels: { id: string; imageUrl: string; dialogue?: string; context?: string; scriptLength?: string }[],
   language: string = 'English',
   globalContext: string = '',
   globalScriptLength: string = 'Normal',
@@ -231,118 +347,107 @@ export async function generatePanelScripts(
   }
 
   const allResults: { id: string; script: string }[] = [];
-  const parallelChunkWorkers = 1; // Process 1 chunk (10 panels) per batch to prevent burst 15 RPM limit
 
-  for (let i = 0; i < chunks.length; i += parallelChunkWorkers) {
+  for (let i = 0; i < chunks.length; i++) {
     if (signal?.aborted) break;
+    const chunk = chunks[i];
 
-    const currentChunkBatch = chunks.slice(i, i + parallelChunkWorkers);
-    const chunkBatchResults = await Promise.all(currentChunkBatch.map(async (chunk) => {
-      if (signal?.aborted) return [];
-
-      // 1. Compress panel thumbnails concurrently (~15KB each)
-      const compressedChunk = await Promise.all(chunk.map(async p => {
-        const compressed = await fastCompressForAI(p.imageUrl, 360);
-        return { ...p, ...compressed };
-      }));
-
-      // 2. Build multi-part prompt
-      const promptText = `
-        You are a professional comic narrator.
-        Analyze these ${chunk.length} comic panels in sequential order.
-        For each panel, write a cinematic video narration script in ${language}.
-        ${globalContext ? `Global Context: ${globalContext}\n` : ''}
-        Return a JSON array of objects with fields "id" and "script".
-        CRITICAL: Use exact panel ID for each object.
-      `;
-
-      const parts: any[] = [{ text: promptText }];
-      compressedChunk.forEach((p, idx) => {
-        let lengthInstr = "Normal (1-3 sentences)";
-        const lSetting = p.scriptLength || globalScriptLength;
-        if (lSetting === 'Short') lengthInstr = "Short (1 sentence)";
-        else if (lSetting === 'Detailed') lengthInstr = "Detailed (4+ sentences)";
-
-        parts.push({ text: `Panel ID: ${p.id}\nIndex: ${idx + 1}\nRequired Length: ${lengthInstr}${p.context ? `\nContext: ${p.context}` : ''}` });
-        parts.push({ inlineData: { mimeType: p.mimeType, data: p.data } });
-      });
-
-      let chunkScripts: { id: string; script: string }[] = [];
-
-      try {
-        await withRetry(async () => {
-          const response = await (getGenAI().models.generateContent as any)({
-            model: "gemini-2.5-flash",
-            contents: [{ role: 'user', parts }],
-            config: {
-              responseMimeType: "application/json",
-              responseSchema: {
-                type: Type.ARRAY,
-                items: {
-                  type: Type.OBJECT,
-                  properties: {
-                    id: { type: Type.STRING },
-                    script: { type: Type.STRING }
-                  },
-                  required: ["id", "script"]
-                }
-              }
-            }
-          }, { signal });
-
-          const text = response.text;
-          if (text) {
-            let clean = text.trim();
-            if (clean.includes("```")) {
-              const m = clean.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
-              if (m) clean = m[1].trim();
-            }
-            const parsed = JSON.parse(clean);
-            if (Array.isArray(parsed)) {
-              chunk.forEach((p, idx) => {
-                let match = parsed.find(item => item && (item.id === p.id || item.id === `panel_${idx + 1}` || item.id === `${idx + 1}`));
-                if (!match && parsed[idx]) match = parsed[idx];
-                const scriptText = typeof match === 'string' ? match : (match?.script || match?.text || '');
-                if (scriptText && scriptText.trim()) {
-                  chunkScripts.push({ id: p.id, script: scriptText.trim() });
-                }
-              });
-            }
-          }
-        });
-      } catch (err) {
-        console.warn("[Turbo Engine] Batch JSON chunk failed, falling back to sequential single-panel workers for this chunk:", err);
-      }
-
-      // Sequential Fallback for missing panels with throttling (prevents 15 RPM spike)
-      const scoredIds = new Set(chunkScripts.map(s => s.id));
-      const missingPanels = chunk.filter(p => !scoredIds.has(p.id));
-
-      if (missingPanels.length > 0 && !signal?.aborted) {
-        for (const p of missingPanels) {
-          if (signal?.aborted) break;
-          try {
-            const s = await generateSinglePanelScript(p, language, globalContext, globalScriptLength, signal);
-            if (s) chunkScripts.push({ id: p.id, script: s });
-          } catch (e) {
-            console.error("Single panel fallback error:", e);
-          }
-          await new Promise(resolve => setTimeout(resolve, 300));
-        }
-      }
-
-      return chunkScripts;
+    const compressedChunk = await Promise.all(chunk.map(async p => {
+      const compressed = await fastCompressForAI(p.imageUrl, 360);
+      return { ...p, ...compressed };
     }));
 
-    const flatBatchResults = chunkBatchResults.flat();
-    allResults.push(...flatBatchResults);
+    const promptText = `
+      You are a professional comic narrator.
+      Analyze these ${chunk.length} comic panels in sequential order.
+      For each panel, write a cinematic video narration script in ${language}.
+      ${globalContext ? `Global Context: ${globalContext}\n` : ''}
+      Return a JSON array of objects with fields "id" and "script".
+      CRITICAL: Use exact panel ID for each object.
+    `;
 
-    if (onProgress && flatBatchResults.length > 0) {
-      onProgress(flatBatchResults);
+    const parts: any[] = [{ text: promptText }];
+    compressedChunk.forEach((p, idx) => {
+      let lengthInstr = "Normal (1-3 sentences)";
+      const lSetting = p.scriptLength || globalScriptLength;
+      if (lSetting === 'Short') lengthInstr = "Short (1 sentence)";
+      else if (lSetting === 'Detailed') lengthInstr = "Detailed (4+ sentences)";
+
+      parts.push({ text: `Panel ID: ${p.id}\nIndex: ${idx + 1}\nRequired Length: ${lengthInstr}${p.context ? `\nContext: ${p.context}` : ''}` });
+      parts.push({ inlineData: { mimeType: p.mimeType, data: p.data } });
+    });
+
+    let chunkScripts: { id: string; script: string }[] = [];
+
+    try {
+      await withRetry(async (client) => {
+        const response = await (client.models.generateContent as any)({
+          model: "gemini-2.5-flash",
+          contents: [{ role: 'user', parts }],
+          config: {
+            responseMimeType: "application/json",
+            responseSchema: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  id: { type: Type.STRING },
+                  script: { type: Type.STRING }
+                },
+                required: ["id", "script"]
+              }
+            }
+          }
+        }, { signal });
+
+        const text = response.text;
+        if (text) {
+          let clean = text.trim();
+          if (clean.includes("```")) {
+            const m = clean.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
+            if (m) clean = m[1].trim();
+          }
+          const parsed = JSON.parse(clean);
+          if (Array.isArray(parsed)) {
+            chunk.forEach((p, idx) => {
+              let match = parsed.find(item => item && (item.id === p.id || item.id === `panel_${idx + 1}` || item.id === `${idx + 1}`));
+              if (!match && parsed[idx]) match = parsed[idx];
+              const scriptText = typeof match === 'string' ? match : (match?.script || match?.text || '');
+              if (scriptText && scriptText.trim()) {
+                chunkScripts.push({ id: p.id, script: scriptText.trim() });
+              }
+            });
+          }
+        }
+      });
+    } catch (err) {
+      console.warn("[Turbo Engine] Batch JSON chunk failed, falling back to sequential single-panel workers for this chunk:", err);
     }
 
-    // 400ms throttle between chunk batches to stay smoothly under 15 RPM
-    if (i + parallelChunkWorkers < chunks.length) {
+    // Sequential fallback for any panels the batch call missed — throttled to avoid an RPM spike.
+    const scoredIds = new Set(chunkScripts.map(s => s.id));
+    const missingPanels = chunk.filter(p => !scoredIds.has(p.id));
+
+    if (missingPanels.length > 0 && !signal?.aborted) {
+      for (const p of missingPanels) {
+        if (signal?.aborted) break;
+        try {
+          const s = await generateSinglePanelScript(p, language, globalContext, globalScriptLength, signal);
+          if (s) chunkScripts.push({ id: p.id, script: s });
+        } catch (e) {
+          console.error("Single panel fallback error:", e);
+        }
+        await new Promise(resolve => setTimeout(resolve, 300));
+      }
+    }
+
+    allResults.push(...chunkScripts);
+    if (onProgress && chunkScripts.length > 0) {
+      onProgress(chunkScripts);
+    }
+
+    // Throttle between chunk batches to stay smoothly under RPM limits.
+    if (i + 1 < chunks.length) {
       await new Promise(resolve => setTimeout(resolve, 400));
     }
   }
@@ -350,61 +455,76 @@ export async function generatePanelScripts(
   return allResults;
 }
 
+// ============================================================================
+// RETRY / ROTATION CORE
+//
+// Key behavior differences from the previous version:
+// - `operation` now receives the GoogleGenAI client to use, and we pass along
+//   which key produced it, so a 429 can be attributed to the RIGHT key even
+//   under concurrency (no shared "currentKey" variable being read after
+//   another call already rotated it).
+// - Daily-quota errors mark that specific key exhausted for the session.
+// - Per-minute errors put ONLY that key in a short cooldown (default 60s,
+//   or whatever the API's RetryInfo/Retry-After told us) and immediately
+//   try a different available key — no waiting required unless every key
+//   is cooling down.
+// - Retries scale with pool size: with N keys, we allow at least N rotation
+//   attempts before falling back to a real timed backoff.
+// ============================================================================
 
-async function withRetry<T>(operation: () => Promise<T>, maxRetries = 6, baseDelay = 1000): Promise<T> {
-  let attempt = 0;
-  let keysTriedInRound = 0;
+const DEFAULT_RPM_COOLDOWN_MS = 60_000;
 
-  while (attempt < maxRetries) {
+async function withRetry<T>(
+  operation: (client: GoogleGenAI, key: string) => Promise<T>,
+  maxTimedRetries = 5,
+  baseDelay = 1000
+): Promise<T> {
+  let timedAttempt = 0;
+
+  while (true) {
+    const { client, key } = getGenAI();
+    if (!key) {
+      throw new Error("Tidak ada Gemini API Key yang tersedia. Silakan periksa Settings.");
+    }
+
     try {
-      return await operation();
+      return await operation(client, key);
     } catch (error: any) {
-      const errMsg = (error?.message || '').toLowerCase();
-      const isRateLimit =
-        error?.status === 429 ||
-        errMsg.includes('429') ||
-        errMsg.includes('resource_exhausted') ||
-        errMsg.includes('quota') ||
-        error?.status === 503;
+      const { classification, retryAfterMs } = classifyError(error);
 
-      if (isRateLimit) {
-        const currentKeys = parseApiKeys();
-        const currentKey = currentKeys[activeKeyIndex];
-
-        // ONLY mark key as PERMANENTLY exhausted if the error explicitly states daily quota limit
-        const isDailyQuotaExhausted =
-          errMsg.includes('daily') ||
-          errMsg.includes('per-day') ||
-          errMsg.includes('quotaexceeded');
-
-        if (isDailyQuotaExhausted && currentKey) {
-          markKeyAsExhausted(currentKey);
-        }
-
-        const rotated = rotateToNextApiKey();
-        if (rotated) {
-          keysTriedInRound++;
-          const keys = parseApiKeys();
-          if (keysTriedInRound < keys.length) {
-            console.info(`[API Key Manager] RPM Rate Limit hit on Key. Rotated to Key #${activeKeyIndex + 1}...`);
-            await new Promise(resolve => setTimeout(resolve, 300));
-            continue;
-          }
-        }
-
-        attempt++;
-        keysTriedInRound = 0;
-        if (attempt >= maxRetries) throw error;
-
-        const delay = baseDelay * Math.pow(2, Math.min(attempt - 1, 3));
-        console.warn(`[API Key Rate Limit] Waiting ${delay}ms before retrying (Attempt ${attempt} of ${maxRetries})...`);
-        await new Promise(resolve => setTimeout(resolve, delay));
-      } else {
+      if (classification === 'not-rate-limit') {
         throw error;
       }
+
+      if (classification === 'daily') {
+        markKeyAsExhausted(key);
+        toast.warning(`Kuota harian habis untuk salah satu API Key. Beralih ke key lain jika tersedia.`, { id: 'daily-quota-hit' });
+      } else {
+        // per-minute or unknown-rate-limit: short cooldown for THIS key only
+        const cooldown = retryAfterMs ?? DEFAULT_RPM_COOLDOWN_MS;
+        putKeyInCooldown(key, cooldown);
+      }
+
+      const stillAvailable = getAvailableKeyStates().filter(s => s.key !== key || getAvailableKeyStates().length > 1);
+      const anyOtherKeyUsable = getAvailableKeyStates().some(s => s.key !== key);
+
+      if (anyOtherKeyUsable) {
+        // Rotate immediately — no artificial delay needed, another key is free right now.
+        console.info(`[API Key Manager] ${classification} limit on key ${key.substring(0, 6)}..., switching to another key.`);
+        continue;
+      }
+
+      // No other key is currently usable — this is a real "everyone is rate limited" moment.
+      timedAttempt++;
+      if (timedAttempt > maxTimedRetries) {
+        throw error;
+      }
+      const delay = retryAfterMs ?? (baseDelay * Math.pow(2, Math.min(timedAttempt - 1, 4)));
+      console.warn(`[API Key Manager] All keys rate-limited. Waiting ${delay}ms (attempt ${timedAttempt}/${maxTimedRetries})...`);
+      toast.info(`Semua API Key sedang limit. Menunggu ${Math.round(delay / 1000)}s...`, { id: 'all-keys-cooldown' });
+      await new Promise(resolve => setTimeout(resolve, delay));
     }
   }
-  throw new Error("Max retries exceeded");
 }
 
 function addWavHeader(pcmData: Uint8Array, sampleRate: number): Uint8Array {
@@ -462,8 +582,8 @@ export async function generateSocialMetadata(
     Write these in ${language}.
   `;
 
-  return withRetry(async () => {
-    const response = await getGenAI().models.generateContent({
+  return withRetry(async (client) => {
+    const response = await client.models.generateContent({
       model: "gemini-2.5-flash",
       contents: [{ role: 'user', parts: [{ text: prompt }] }],
       config: {
@@ -482,7 +602,7 @@ export async function generateSocialMetadata(
 
     const text = response.text;
     if (!text) throw new Error("No response from AI for metadata.");
-    
+
     try {
       return JSON.parse(text) as { titleHook: string; description: string; hashtags: string; };
     } catch (e) {
@@ -524,8 +644,8 @@ export async function updateTitleMemoryCumulative(
     Write all output in ${language}.
   `;
 
-  return withRetry(async () => {
-    const response = await getGenAI().models.generateContent({
+  return withRetry(async (client) => {
+    const response = await client.models.generateContent({
       model: "gemini-2.5-flash",
       contents: [{ role: 'user', parts: [{ text: prompt }] }],
       config: {
@@ -556,58 +676,50 @@ export async function updateTitleMemoryCumulative(
 }
 
 export async function generateSpeech(text: string, voice: string = 'Kore'): Promise<string> {
-  return withRetry(async () => {
-    try {
-      const response = await getGenAI().models.generateContent({
-        model: "gemini-2.5-flash-preview-tts",
-        contents: [{ parts: [{ text: `Say naturally: ${text}` }] }],
-        config: {
-          responseModalities: ["AUDIO"],
-          speechConfig: {
-            voiceConfig: {
-              prebuiltVoiceConfig: { voiceName: voice },
-            },
+  return withRetry(async (client) => {
+    const response = await client.models.generateContent({
+      model: "gemini-2.5-flash-preview-tts",
+      contents: [{ parts: [{ text: `Say naturally: ${text}` }] }],
+      config: {
+        responseModalities: ["AUDIO"],
+        speechConfig: {
+          voiceConfig: {
+            prebuiltVoiceConfig: { voiceName: voice },
           },
         },
-      });
+      },
+    });
 
-      const inlineData = response.candidates?.[0]?.content?.parts?.[0]?.inlineData;
-      if (!inlineData?.data) {
-        throw new Error("No audio data received from Gemini TTS");
-      }
-      
-      const pcmBytes = Uint8Array.from(atob(inlineData.data), c => c.charCodeAt(0));
-      
-      let sampleRate = 24000;
-      if (inlineData.mimeType?.includes('rate=')) {
-         const match = inlineData.mimeType.match(/rate=(\d+)/);
-         if (match && match[1]) sampleRate = parseInt(match[1]);
-      }
-
-      if (pcmBytes.length > 4 && String.fromCharCode(pcmBytes[0], pcmBytes[1], pcmBytes[2], pcmBytes[3]) === 'RIFF') {
-        return inlineData.data;
-      }
-      
-      const wavBytes = addWavHeader(pcmBytes, sampleRate);
-      
-      let wavBinaryString = '';
-      const chunkSize = 8192;
-      for (let i = 0; i < wavBytes.length; i += chunkSize) {
-        wavBinaryString += String.fromCharCode.apply(null, Array.from(wavBytes.slice(i, i + chunkSize)));
-      }
-      return btoa(wavBinaryString);
-      
-    } catch (error: any) {
-      console.error("Error generating speech:", error);
-      throw error;
+    const inlineData = response.candidates?.[0]?.content?.parts?.[0]?.inlineData;
+    if (!inlineData?.data) {
+      throw new Error("No audio data received from Gemini TTS");
     }
+
+    const pcmBytes = Uint8Array.from(atob(inlineData.data), c => c.charCodeAt(0));
+
+    let sampleRate = 24000;
+    if (inlineData.mimeType?.includes('rate=')) {
+      const match = inlineData.mimeType.match(/rate=(\d+)/);
+      if (match && match[1]) sampleRate = parseInt(match[1]);
+    }
+
+    if (pcmBytes.length > 4 && String.fromCharCode(pcmBytes[0], pcmBytes[1], pcmBytes[2], pcmBytes[3]) === 'RIFF') {
+      return inlineData.data;
+    }
+
+    const wavBytes = addWavHeader(pcmBytes, sampleRate);
+
+    let wavBinaryString = '';
+    const chunkSize = 8192;
+    for (let i = 0; i < wavBytes.length; i += chunkSize) {
+      wavBinaryString += String.fromCharCode.apply(null, Array.from(wavBytes.slice(i, i + chunkSize)));
+    }
+    return btoa(wavBinaryString);
   });
 }
 
-
 export function downscaleForAI(base64: string, maxWidth: number = 1024, maxHeight: number = 3072): Promise<string> {
   if (!base64 || typeof base64 !== 'string') return Promise.resolve('');
-  // Fast path for small images
   if (base64.length < 50000) return Promise.resolve(base64);
 
   return new Promise((resolve) => {
@@ -619,7 +731,6 @@ export function downscaleForAI(base64: string, maxWidth: number = 1024, maxHeigh
       }
     };
 
-    // 2.5 second timeout safeguard: If image loading or canvas hangs, resolve with original image source instantly!
     const timer = setTimeout(() => {
       console.warn("downscaleForAI timed out after 2500ms, proceeding with original image.");
       safeResolve(base64);
@@ -632,19 +743,17 @@ export function downscaleForAI(base64: string, maxWidth: number = 1024, maxHeigh
         clearTimeout(timer);
         try {
           let { width, height } = img;
-          
-          // Preserve aspect ratio but cap width to not exceed maxWidth
+
           if (width > maxWidth) {
             height = (height / width) * maxWidth;
             width = maxWidth;
           }
-          
-          // Cap height to not exceed maxHeight
+
           if (height > maxHeight) {
             width = (width / height) * maxHeight;
             height = maxHeight;
           }
-          
+
           width = Math.max(1, Math.floor(width));
           height = Math.max(1, Math.floor(height));
 
@@ -672,9 +781,6 @@ export function downscaleForAI(base64: string, maxWidth: number = 1024, maxHeigh
 }
 
 export async function detectPanels(pageImageUrl: string) {
-  // Downscale image before sending to AI to significantly speed up upload time
-  // Webtoons are vertical strips, so we cap width at 1024, but allow height up to 6000
-  // to ensure human faces aren't squished down to unrecognizable blur blocks.
   const optimizedImage = await downscaleForAI(pageImageUrl, 1024, 6000);
 
   const prompt = `
@@ -707,52 +813,47 @@ export async function detectPanels(pageImageUrl: string) {
     Return a JSON array of objects: { x, y, width, height }.
   `;
 
-  return withRetry(async () => {
-    try {
-      const response = await getGenAI().models.generateContent({
-        model: "gemini-2.5-flash",
-        contents: [{
-          role: 'user',
-          parts: [
-            { text: prompt },
-            { inlineData: { mimeType: "image/jpeg", data: optimizedImage.split(',')[1] } }
-          ]
-        }],
-        config: {
-          responseMimeType: "application/json",
-          responseSchema: {
-            type: Type.ARRAY,
-            items: {
-              type: Type.OBJECT,
-              properties: {
-                x: { type: Type.NUMBER },
-                y: { type: Type.NUMBER },
-                width: { type: Type.NUMBER },
-                height: { type: Type.NUMBER }
-              },
-              required: ["x", "y", "width", "height"]
-            }
+  return withRetry(async (client) => {
+    const response = await client.models.generateContent({
+      model: "gemini-2.5-flash",
+      contents: [{
+        role: 'user',
+        parts: [
+          { text: prompt },
+          { inlineData: { mimeType: "image/jpeg", data: optimizedImage.split(',')[1] } }
+        ]
+      }],
+      config: {
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: Type.ARRAY,
+          items: {
+            type: Type.OBJECT,
+            properties: {
+              x: { type: Type.NUMBER },
+              y: { type: Type.NUMBER },
+              width: { type: Type.NUMBER },
+              height: { type: Type.NUMBER }
+            },
+            required: ["x", "y", "width", "height"]
           }
         }
-      });
-
-      const text = response.text;
-      console.log("Gemini Panel Detection Response:", text);
-
-      if (!text) {
-        console.warn("Gemini returned empty text for panel detection");
-        return [];
       }
+    });
 
-      try {
-        return JSON.parse(text);
-      } catch (parseError) {
-        console.error("Failed to parse Gemini panel detection response:", text);
-        return [];
-      }
-    } catch (error: any) {
-      console.error("Error detecting panels:", error);
-      throw error;
+    const text = response.text;
+    console.log("Gemini Panel Detection Response:", text);
+
+    if (!text) {
+      console.warn("Gemini returned empty text for panel detection");
+      return [];
+    }
+
+    try {
+      return JSON.parse(text);
+    } catch (parseError) {
+      console.error("Failed to parse Gemini panel detection response:", text);
+      return [];
     }
   });
 }
