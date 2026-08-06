@@ -4,10 +4,19 @@ import { toast } from "sonner";
 
 let customApiKeyInput = "";
 let activeKeyIndex = 0;
+const exhaustedKeysSet = new Set<string>();
 
 export function setCustomGeminiApiKey(key: string) {
   customApiKeyInput = key;
-  activeKeyIndex = 0; // Reset active key index when user updates API keys
+  activeKeyIndex = 0;
+  exhaustedKeysSet.clear();
+}
+
+export function markKeyAsExhausted(key: string) {
+  if (key) {
+    exhaustedKeysSet.add(key);
+    console.warn(`[API Key Manager] API Key ${key.substring(0, 6)}... marked as EXHAUSTED for the session.`);
+  }
 }
 
 export function parseApiKeys(): string[] {
@@ -15,11 +24,14 @@ export function parseApiKeys(): string[] {
   const rawInput = customApiKeyInput || envRaw;
   if (!rawInput.trim()) return [];
 
-  // Split by comma, newline, or semicolon and remove whitespace / empty lines
-  return rawInput
+  // Split by comma, newline, or semicolon and filter out invalid tokens
+  const validKeys = rawInput
     .split(/[\n,;]+/)
     .map(k => k.trim())
-    .filter(k => k.length > 0);
+    .filter(k => k.length >= 15);
+
+  const activeKeys = validKeys.filter(k => !exhaustedKeysSet.has(k));
+  return activeKeys.length > 0 ? activeKeys : validKeys;
 }
 
 export function getKeyPoolStats() {
@@ -60,6 +72,79 @@ function rotateToNextApiKey(): boolean {
   return true;
 }
 
+export function fastCompressForAI(
+  imageUrl: string,
+  maxDim: number = 360
+): Promise<{ data: string; mimeType: string }> {
+  if (!imageUrl || typeof imageUrl !== 'string') {
+    return Promise.resolve({ data: '', mimeType: 'image/jpeg' });
+  }
+
+  return new Promise((resolve) => {
+    // 500ms fail-safe timer for instant execution
+    const timer = setTimeout(() => {
+      let rawData = imageUrl;
+      if (rawData.includes(',')) rawData = rawData.split(',')[1];
+      resolve({ data: rawData, mimeType: 'image/jpeg' });
+    }, 500);
+
+    try {
+      const img = new Image();
+      img.crossOrigin = 'anonymous';
+
+      img.onload = () => {
+        clearTimeout(timer);
+        try {
+          let width = img.width || 360;
+          let height = img.height || 360;
+
+          if (width > maxDim || height > maxDim) {
+            if (width > height) {
+              height = Math.round((height / width) * maxDim);
+              width = maxDim;
+            } else {
+              width = Math.round((width / height) * maxDim);
+              height = maxDim;
+            }
+          }
+
+          const canvas = document.createElement('canvas');
+          canvas.width = Math.max(1, width);
+          canvas.height = Math.max(1, height);
+          const ctx = canvas.getContext('2d');
+          if (ctx) {
+            ctx.drawImage(img, 0, 0, width, height);
+            // 55% JPEG compression = ultra-lightweight ~15KB per image payload!
+            const dataUrl = canvas.toDataURL('image/jpeg', 0.55);
+            const base64 = dataUrl.includes(',') ? dataUrl.split(',')[1] : dataUrl;
+            resolve({ data: base64, mimeType: 'image/jpeg' });
+            return;
+          }
+        } catch (e) {
+          console.warn("fastCompressForAI canvas error, using raw:", e);
+        }
+        let rawData = imageUrl;
+        if (rawData.includes(',')) rawData = rawData.split(',')[1];
+        resolve({ data: rawData, mimeType: 'image/jpeg' });
+      };
+
+      img.onerror = () => {
+        clearTimeout(timer);
+        let rawData = imageUrl;
+        if (rawData.includes(',')) rawData = rawData.split(',')[1];
+        resolve({ data: rawData, mimeType: 'image/jpeg' });
+      };
+
+      img.src = imageUrl;
+    } catch (e) {
+      clearTimeout(timer);
+      let rawData = imageUrl;
+      if (rawData.includes(',')) rawData = rawData.split(',')[1];
+      resolve({ data: rawData, mimeType: 'image/jpeg' });
+    }
+  });
+}
+
 export async function generateSinglePanelScript(
   panel: { id: string; imageUrl: string; dialogue?: string; context?: string; scriptLength?: string },
   language: string = 'English',
@@ -67,9 +152,18 @@ export async function generateSinglePanelScript(
   globalScriptLength: string = 'Normal',
   signal?: AbortSignal
 ): Promise<string> {
-  const optimizedData = await downscaleForAI(panel.imageUrl, 768);
-  const data = optimizedData.split(',')[1];
-  
+  if (parseApiKeys().length === 0) {
+    toast.error("Gemini API Key belum diisi! Silakan masukkan API Key di menu Settings.", { id: 'missing-api-key', duration: 6000 });
+    throw new Error("Gemini API Key belum diisi. Silakan masukkan Gemini API Key di menu Settings!");
+  }
+
+  const { data, mimeType } = await fastCompressForAI(panel.imageUrl, 360);
+
+  if (!data) {
+    console.warn("Empty image data for panel:", panel.id);
+    return "";
+  }
+
   let panelLengthInstruction = "Normal (1-3 sentences)";
   const lengthSetting = panel.scriptLength || globalScriptLength;
   if (lengthSetting === 'Short') panelLengthInstruction = "Very brief, punchy (1 sentence max)";
@@ -86,20 +180,33 @@ export async function generateSinglePanelScript(
     ${globalContext ? `BACKGROUND LORE & GLOBAL CONTEXT TO REMEMBER:\n${globalContext}\n` : ''}
   `;
 
-  return withRetry(async () => {
-    const response = await (getGenAI().models.generateContent as any)({
-      model: "gemini-2.5-flash",
-      contents: [{
-        role: 'user',
-        parts: [
-          { text: prompt },
-          { inlineData: { mimeType: "image/jpeg", data } }
-        ]
-      }]
-    }, { signal });
+  const modelsToTry = ["gemini-2.5-flash"];
 
-    return response.text?.trim() || "";
-  });
+  for (const modelName of modelsToTry) {
+    try {
+      return await withRetry(async () => {
+        const response = await (getGenAI().models.generateContent as any)({
+          model: modelName,
+          contents: [{
+            role: 'user',
+            parts: [
+              { text: prompt },
+              { inlineData: { mimeType, data } }
+            ]
+          }]
+        }, { signal });
+
+        return response.text?.trim() || "";
+      });
+    } catch (err: any) {
+      console.warn(`[Script Generator] Model ${modelName} failed for panel ${panel.id}:`, err);
+      if (modelName === modelsToTry[modelsToTry.length - 1]) {
+        throw err;
+      }
+    }
+  }
+
+  return "";
 }
 
 export async function generatePanelScripts(
@@ -112,102 +219,139 @@ export async function generatePanelScripts(
 ) {
   if (!panels.length) return [];
 
-  // Increase chunk size to 5 for faster generation with downscaled images
-  const chunkSize = 5;
-  const chunks = [];
+  if (parseApiKeys().length === 0) {
+    toast.error("Gemini API Key belum diisi! Silakan masukkan API Key di menu Settings.", { id: 'missing-api-key', duration: 6000 });
+    throw new Error("Gemini API Key belum diisi. Silakan masukkan Gemini API Key di menu Settings!");
+  }
+
+  const chunkSize = 10;
+  const chunks: (typeof panels)[] = [];
   for (let i = 0; i < panels.length; i += chunkSize) {
     chunks.push(panels.slice(i, i + chunkSize));
   }
 
-  const prompt = `
-    You are a professional comic scriptwriter and narrator. 
-    Analyze these comic panels in order. For each panel, write a narration script 
-    that describes the action and dialogue in a cinematic way, suitable for a video voiceover.
-    Do NOT include the original text from the comic, just the narration.
-    Write the script in ${language}.
-    
-    ${globalContext ? `BACKGROUND LORE & GLOBAL CONTEXT TO REMEMBER:\n${globalContext}\nUse this context to accurately name characters, weapons, and skills seen in the panels.` : ''}
-    
-    CRITICAL INSTRUCTION: You must strictly follow the "Required Script Length" specified for each panel individually.
-    
-    Return the result as a JSON array of objects with 'id' and 'script' fields.
-    CRITICAL: You must use the EXACT 'id' provided for each panel.
-  `;
+  const allResults: { id: string; script: string }[] = [];
+  const parallelChunkWorkers = 1; // Process 1 chunk (10 panels) per batch to prevent burst 15 RPM limit
 
-  let allResults: { id: string; script: string }[] = [];
+  for (let i = 0; i < chunks.length; i += parallelChunkWorkers) {
+    if (signal?.aborted) break;
 
-  for (const chunk of chunks) {
-    if (signal?.aborted) {
-      console.warn("Script generation cancelled by user signal. Returning partial results completed so far.");
-      break;
-    }
+    const currentChunkBatch = chunks.slice(i, i + parallelChunkWorkers);
+    const chunkBatchResults = await Promise.all(currentChunkBatch.map(async (chunk) => {
+      if (signal?.aborted) return [];
 
-    // Await downscaling concurrently for the chunk
-    const optimizedChunk = await Promise.all(chunk.map(async p => {
-      const optimizedData = await downscaleForAI(p.imageUrl, 768);
-      return { ...p, data: optimizedData.split(',')[1], mimeType: "image/jpeg" };
-    }));
+      // 1. Compress panel thumbnails concurrently (~15KB each)
+      const compressedChunk = await Promise.all(chunk.map(async p => {
+        const compressed = await fastCompressForAI(p.imageUrl, 360);
+        return { ...p, ...compressed };
+      }));
 
-    const parts = [
-      { text: prompt },
-      ...optimizedChunk.flatMap(p => {
-        let panelLengthInstruction = "Normal (1-3 sentences)";
-        const lengthSetting = p.scriptLength || globalScriptLength;
-        if (lengthSetting === 'Short') panelLengthInstruction = "Very brief, punchy (1 sentence max)";
-        else if (lengthSetting === 'Detailed') panelLengthInstruction = "Detailed, descriptive (4+ sentences)";
+      // 2. Build multi-part prompt
+      const promptText = `
+        You are a professional comic narrator.
+        Analyze these ${chunk.length} comic panels in sequential order.
+        For each panel, write a cinematic video narration script in ${language}.
+        ${globalContext ? `Global Context: ${globalContext}\n` : ''}
+        Return a JSON array of objects with fields "id" and "script".
+        CRITICAL: Use exact panel ID for each object.
+      `;
 
-        return [
-          { text: `Panel ID: ${p.id}\nRequired Script Length: ${panelLengthInstruction}${p.context ? `\nPanel Context/Lore: ${p.context}` : ''}` },
-          { inlineData: { mimeType: p.mimeType, data: p.data } }
-        ];
-      })
-    ];
+      const parts: any[] = [{ text: promptText }];
+      compressedChunk.forEach((p, idx) => {
+        let lengthInstr = "Normal (1-3 sentences)";
+        const lSetting = p.scriptLength || globalScriptLength;
+        if (lSetting === 'Short') lengthInstr = "Short (1 sentence)";
+        else if (lSetting === 'Detailed') lengthInstr = "Detailed (4+ sentences)";
 
-    await withRetry(async () => {
+        parts.push({ text: `Panel ID: ${p.id}\nIndex: ${idx + 1}\nRequired Length: ${lengthInstr}${p.context ? `\nContext: ${p.context}` : ''}` });
+        parts.push({ inlineData: { mimeType: p.mimeType, data: p.data } });
+      });
+
+      let chunkScripts: { id: string; script: string }[] = [];
+
       try {
-        const response = await (getGenAI().models.generateContent as any)({
-          model: "gemini-2.5-flash",
-          contents: [{ role: 'user', parts }],
-          config: {
-            responseMimeType: "application/json",
-            responseSchema: {
-              type: Type.ARRAY,
-              items: {
-                type: Type.OBJECT,
-                properties: {
-                  id: { type: Type.STRING },
-                  script: { type: Type.STRING }
-                },
-                required: ["id", "script"]
+        await withRetry(async () => {
+          const response = await (getGenAI().models.generateContent as any)({
+            model: "gemini-2.5-flash",
+            contents: [{ role: 'user', parts }],
+            config: {
+              responseMimeType: "application/json",
+              responseSchema: {
+                type: Type.ARRAY,
+                items: {
+                  type: Type.OBJECT,
+                  properties: {
+                    id: { type: Type.STRING },
+                    script: { type: Type.STRING }
+                  },
+                  required: ["id", "script"]
+                }
               }
             }
-          }
-        }, { signal });
+          }, { signal });
 
-        const text = response.text;
-        if (text) {
-          try {
-            const parsed: { id: string; script: string }[] = JSON.parse(text);
-            allResults = allResults.concat(parsed);
-            if (onProgress && parsed.length > 0) {
-              onProgress(parsed);
+          const text = response.text;
+          if (text) {
+            let clean = text.trim();
+            if (clean.includes("```")) {
+              const m = clean.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
+              if (m) clean = m[1].trim();
             }
-          } catch (e) {
-            console.error("Failed to parse Gemini script response chunk:", text);
+            const parsed = JSON.parse(clean);
+            if (Array.isArray(parsed)) {
+              chunk.forEach((p, idx) => {
+                let match = parsed.find(item => item && (item.id === p.id || item.id === `panel_${idx + 1}` || item.id === `${idx + 1}`));
+                if (!match && parsed[idx]) match = parsed[idx];
+                const scriptText = typeof match === 'string' ? match : (match?.script || match?.text || '');
+                if (scriptText && scriptText.trim()) {
+                  chunkScripts.push({ id: p.id, script: scriptText.trim() });
+                }
+              });
+            }
           }
-        }
-      } catch (error: any) {
-        console.error("Error generating scripts for chunk:", error);
-        throw error;
+        });
+      } catch (err) {
+        console.warn("[Turbo Engine] Batch JSON chunk failed, falling back to sequential single-panel workers for this chunk:", err);
       }
-    });
+
+      // Sequential Fallback for missing panels with throttling (prevents 15 RPM spike)
+      const scoredIds = new Set(chunkScripts.map(s => s.id));
+      const missingPanels = chunk.filter(p => !scoredIds.has(p.id));
+
+      if (missingPanels.length > 0 && !signal?.aborted) {
+        for (const p of missingPanels) {
+          if (signal?.aborted) break;
+          try {
+            const s = await generateSinglePanelScript(p, language, globalContext, globalScriptLength, signal);
+            if (s) chunkScripts.push({ id: p.id, script: s });
+          } catch (e) {
+            console.error("Single panel fallback error:", e);
+          }
+          await new Promise(resolve => setTimeout(resolve, 300));
+        }
+      }
+
+      return chunkScripts;
+    }));
+
+    const flatBatchResults = chunkBatchResults.flat();
+    allResults.push(...flatBatchResults);
+
+    if (onProgress && flatBatchResults.length > 0) {
+      onProgress(flatBatchResults);
+    }
+
+    // 400ms throttle between chunk batches to stay smoothly under 15 RPM
+    if (i + parallelChunkWorkers < chunks.length) {
+      await new Promise(resolve => setTimeout(resolve, 400));
+    }
   }
 
   return allResults;
 }
 
 
-async function withRetry<T>(operation: () => Promise<T>, maxRetries = 10, baseDelay = 3000): Promise<T> {
+async function withRetry<T>(operation: () => Promise<T>, maxRetries = 6, baseDelay = 1000): Promise<T> {
   let attempt = 0;
   let keysTriedInRound = 0;
 
@@ -215,21 +359,35 @@ async function withRetry<T>(operation: () => Promise<T>, maxRetries = 10, baseDe
     try {
       return await operation();
     } catch (error: any) {
+      const errMsg = (error?.message || '').toLowerCase();
       const isRateLimit =
         error?.status === 429 ||
-        error?.message?.includes('429') ||
-        error?.message?.includes('RESOURCE_EXHAUSTED') ||
-        error?.message?.includes('quota') ||
+        errMsg.includes('429') ||
+        errMsg.includes('resource_exhausted') ||
+        errMsg.includes('quota') ||
         error?.status === 503;
 
       if (isRateLimit) {
+        const currentKeys = parseApiKeys();
+        const currentKey = currentKeys[activeKeyIndex];
+
+        // ONLY mark key as PERMANENTLY exhausted if the error explicitly states daily quota limit
+        const isDailyQuotaExhausted =
+          errMsg.includes('daily') ||
+          errMsg.includes('per-day') ||
+          errMsg.includes('quotaexceeded');
+
+        if (isDailyQuotaExhausted && currentKey) {
+          markKeyAsExhausted(currentKey);
+        }
+
         const rotated = rotateToNextApiKey();
         if (rotated) {
           keysTriedInRound++;
           const keys = parseApiKeys();
-          // If we haven't tried all keys in the pool yet, retry immediately with the next key!
           if (keysTriedInRound < keys.length) {
-            console.info(`[API Key Manager] Retrying operation immediately with API Key #${activeKeyIndex + 1}...`);
+            console.info(`[API Key Manager] RPM Rate Limit hit on Key. Rotated to Key #${activeKeyIndex + 1}...`);
+            await new Promise(resolve => setTimeout(resolve, 300));
             continue;
           }
         }
@@ -238,8 +396,8 @@ async function withRetry<T>(operation: () => Promise<T>, maxRetries = 10, baseDe
         keysTriedInRound = 0;
         if (attempt >= maxRetries) throw error;
 
-        const delay = baseDelay * Math.pow(2, Math.min(attempt - 1, 4));
-        console.warn(`[API Key Rate Limit] Retrying in ${delay}ms... (Attempt ${attempt} of ${maxRetries})`);
+        const delay = baseDelay * Math.pow(2, Math.min(attempt - 1, 3));
+        console.warn(`[API Key Rate Limit] Waiting ${delay}ms before retrying (Attempt ${attempt} of ${maxRetries})...`);
         await new Promise(resolve => setTimeout(resolve, delay));
       } else {
         throw error;
@@ -335,6 +493,68 @@ export async function generateSocialMetadata(
   });
 }
 
+export async function updateTitleMemoryCumulative(
+  chapterName: string,
+  scripts: string[],
+  existingLore: string = '',
+  existingSummary: string = '',
+  language: string = 'English'
+): Promise<{ characterLore: string; storySummary: string; chapterSummary: string }> {
+  if (!scripts.length) {
+    return { characterLore: existingLore, storySummary: existingSummary, chapterSummary: '' };
+  }
+
+  const prompt = `
+    You are an AI Comic Continuity Manager and Lore Master.
+    Analyze the narration scripts from the newly processed comic chapter "${chapterName}":
+
+    ${scripts.map((s, i) => `Panel ${i + 1}: ${s}`).join('\n')}
+
+    EXISTING TITLE CHARACTER ENCYCLOPEDIA / LORE:
+    ${existingLore ? existingLore : 'None yet.'}
+
+    EXISTING CUMULATIVE STORY SUMMARY (Chapters prior to ${chapterName}):
+    ${existingSummary ? existingSummary : 'None yet.'}
+
+    YOUR TASKS:
+    1. Write a concise 2-4 sentence 'chapterSummary' summarizing key plot events in "${chapterName}".
+    2. Update 'characterLore': Maintain a clean bulleted character encyclopedia. Add any newly introduced characters (names, physical appearance, roles, abilities, clothing/hair) or update existing character profiles with new developments from "${chapterName}". Keep existing character details intact.
+    3. Update 'storySummary': Synthesize a clean cumulative story timeline summarizing major story arcs and events up to "${chapterName}".
+
+    Write all output in ${language}.
+  `;
+
+  return withRetry(async () => {
+    const response = await getGenAI().models.generateContent({
+      model: "gemini-2.5-flash",
+      contents: [{ role: 'user', parts: [{ text: prompt }] }],
+      config: {
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            chapterSummary: { type: Type.STRING },
+            characterLore: { type: Type.STRING },
+            storySummary: { type: Type.STRING }
+          },
+          required: ["chapterSummary", "characterLore", "storySummary"]
+        }
+      }
+    });
+
+    const text = response.text;
+    if (!text) throw new Error("No response from AI for memory update.");
+
+    try {
+      return JSON.parse(text) as { chapterSummary: string; characterLore: string; storySummary: string };
+    } catch (e) {
+      const jsonMatch = text.match(/```(?:json)?\n([\s\S]*?)```/);
+      if (jsonMatch) return JSON.parse(jsonMatch[1]);
+      throw e;
+    }
+  });
+}
+
 export async function generateSpeech(text: string, voice: string = 'Kore'): Promise<string> {
   return withRetry(async () => {
     try {
@@ -386,38 +606,68 @@ export async function generateSpeech(text: string, voice: string = 'Kore'): Prom
 
 
 export function downscaleForAI(base64: string, maxWidth: number = 1024, maxHeight: number = 3072): Promise<string> {
-  return new Promise((resolve) => {
-    const img = new Image();
-    img.onload = () => {
-      let { width, height } = img;
-      
-      // Preserve aspect ratio but cap width to not exceed maxWidth
-      if (width > maxWidth) {
-        height = (height / width) * maxWidth;
-        width = maxWidth;
-      }
-      
-      // Cap height to not exceed maxHeight (Gemini max allowed typically 3072)
-      if (height > maxHeight) {
-        width = (width / height) * maxHeight;
-        height = maxHeight;
-      }
-      
-      width = Math.floor(width);
-      height = Math.floor(height);
+  if (!base64 || typeof base64 !== 'string') return Promise.resolve('');
+  // Fast path for small images
+  if (base64.length < 50000) return Promise.resolve(base64);
 
-      const canvas = document.createElement('canvas');
-      canvas.width = width;
-      canvas.height = height;
-      const ctx = canvas.getContext('2d');
-      if (ctx) ctx.drawImage(img, 0, 0, width, height);
-      resolve(canvas.toDataURL('image/jpeg', 0.8)); // Using JPEG 80% for speed
+  return new Promise((resolve) => {
+    let resolved = false;
+    const safeResolve = (val: string) => {
+      if (!resolved) {
+        resolved = true;
+        resolve(val);
+      }
     };
-    img.onerror = (err) => {
-      console.warn("Failed to load image in downscaleForAI, returning original source:", err);
-      resolve(base64); // Safe fallback to bypass hanging
-    };
-    img.src = base64;
+
+    // 2.5 second timeout safeguard: If image loading or canvas hangs, resolve with original image source instantly!
+    const timer = setTimeout(() => {
+      console.warn("downscaleForAI timed out after 2500ms, proceeding with original image.");
+      safeResolve(base64);
+    }, 2500);
+
+    try {
+      const img = new Image();
+      img.crossOrigin = "anonymous";
+      img.onload = () => {
+        clearTimeout(timer);
+        try {
+          let { width, height } = img;
+          
+          // Preserve aspect ratio but cap width to not exceed maxWidth
+          if (width > maxWidth) {
+            height = (height / width) * maxWidth;
+            width = maxWidth;
+          }
+          
+          // Cap height to not exceed maxHeight
+          if (height > maxHeight) {
+            width = (width / height) * maxHeight;
+            height = maxHeight;
+          }
+          
+          width = Math.max(1, Math.floor(width));
+          height = Math.max(1, Math.floor(height));
+
+          const canvas = document.createElement('canvas');
+          canvas.width = width;
+          canvas.height = height;
+          const ctx = canvas.getContext('2d');
+          if (ctx) ctx.drawImage(img, 0, 0, width, height);
+          safeResolve(canvas.toDataURL('image/jpeg', 0.8));
+        } catch (e) {
+          safeResolve(base64);
+        }
+      };
+      img.onerror = (err) => {
+        clearTimeout(timer);
+        console.warn("Failed to load image in downscaleForAI, returning original source:", err);
+        safeResolve(base64);
+      };
+      img.src = base64;
+    } catch (e) {
+      clearTimeout(timer);
+      safeResolve(base64);
+    }
   });
 }
 

@@ -77,7 +77,7 @@ import {
 
 import { Project, Panel, ComicChapter, Title, Category } from './types';
 import { fileToBase64, cropImage, isBlankImage } from './services/imageProcessing';
-import { detectPanels, generatePanelScripts, generateSinglePanelScript, generateSpeech, generateSocialMetadata, getKeyPoolStats } from './services/gemini';
+import { detectPanels, generatePanelScripts, generateSinglePanelScript, generateSpeech, generateSocialMetadata, updateTitleMemoryCumulative, getKeyPoolStats } from './services/gemini';
 import { generateFreeSpeech } from './services/tts';
 import { saveProjectToDB, loadProjectFromDB, exportProjectAsZip, importProjectFromZip } from './services/storage';
 
@@ -151,6 +151,11 @@ export default function App() {
 
   const [currentCategoryId, setCurrentCategoryId] = useState<string | null>(null);
   const [currentTitleId, setCurrentTitleId] = useState<string | null>(null);
+
+  const [selectedTitleMemory, setSelectedTitleMemory] = useState<Title | null>(null);
+  const [isTitleMemoryModalOpen, setIsTitleMemoryModalOpen] = useState(false);
+  const [titleMemoryLoreInput, setTitleMemoryLoreInput] = useState('');
+  const [titleMemorySummaryInput, setTitleMemorySummaryInput] = useState('');
 
   const [selectedLibraryTitleIds, setSelectedLibraryTitleIds] = useState<Set<string>>(new Set());
   const [selectedLibraryChapterIds, setSelectedLibraryChapterIds] = useState<Set<string>>(new Set());
@@ -1385,11 +1390,115 @@ export default function App() {
       setIsProcessing(false);
     }
   };
-  const buildGlobalContext = () => {
-    return project.chapters.map(c => 
+  const buildGlobalContext = (targetChapter?: ComicChapter) => {
+    const activeChap = targetChapter || currentChapter;
+    if (!activeChap) return "";
+
+    const parentTitle = project.titles.find(t => t.id === activeChap.titleId);
+    const parts: string[] = [];
+
+    if (parentTitle) {
+      if (parentTitle.characterLore?.trim()) {
+        parts.push(`--- TITLE CHARACTER ENCYCLOPEDIA & PROFILES ---\n${parentTitle.characterLore.trim()}`);
+      }
+      if (parentTitle.storySummary?.trim()) {
+        parts.push(`--- CUMULATIVE STORY SUMMARY (CHAPTERS 1 UNTIL PREVIOUS) ---\n${parentTitle.storySummary.trim()}`);
+      }
+      if (parentTitle.chapterSummaries && parentTitle.chapterSummaries.length > 0) {
+        const pastSummaries = parentTitle.chapterSummaries
+          .filter(cs => cs.chapterId !== activeChap.id)
+          .map(cs => `- [${cs.chapterName}]: ${cs.summary}`)
+          .join('\n');
+        if (pastSummaries.trim()) {
+          parts.push(`--- PAST CHAPTER HIGHLIGHTS ---\n${pastSummaries}`);
+        }
+      }
+    }
+
+    // Panel-level lore notes from chapters belonging to the SAME title only
+    const sameTitleChapters = project.chapters.filter(c => c.titleId === activeChap.titleId);
+    const panelNotes = sameTitleChapters.map(c => 
       `[Chapter: ${c.name}]\n` + 
       c.panels.filter(pan => pan.context?.trim()).map(pan => `- ${pan.context}`).join('\n')
     ).filter(c => c.includes('- ')).join('\n\n');
+
+    if (panelNotes.trim()) {
+      parts.push(`--- PANEL LORE NOTES ---\n${panelNotes.trim()}`);
+    }
+
+    return parts.join('\n\n');
+  };
+
+  const triggerAutoUpdateTitleMemory = async (chapterToUpdate: ComicChapter) => {
+    if (!chapterToUpdate) return;
+    const parentTitle = project.titles.find(t => t.id === chapterToUpdate.titleId);
+    if (!parentTitle) return;
+
+    const scripts = chapterToUpdate.panels.map(p => p.script).filter(s => s?.trim());
+    if (!scripts.length) return;
+
+    try {
+      toast.info(`Menyimpan memori karakter & alur cerita untuk "${parentTitle.name}"...`, { id: 'title-memory-update' });
+      const memoryUpdate = await updateTitleMemoryCumulative(
+        chapterToUpdate.name,
+        scripts,
+        parentTitle.characterLore || '',
+        parentTitle.storySummary || '',
+        project.settings.language
+      );
+
+      const existingSummaries = parentTitle.chapterSummaries || [];
+      const updatedSummaries = existingSummaries.filter(s => s.chapterId !== chapterToUpdate.id);
+      updatedSummaries.push({
+        chapterId: chapterToUpdate.id,
+        chapterName: chapterToUpdate.name,
+        summary: memoryUpdate.chapterSummary,
+        createdAt: Date.now()
+      });
+
+      setProject(prev => {
+        const updatedTitles = prev.titles.map(t => {
+          if (t.id === parentTitle.id) {
+            return {
+              ...t,
+              characterLore: memoryUpdate.characterLore,
+              storySummary: memoryUpdate.storySummary,
+              chapterSummaries: updatedSummaries
+            };
+          }
+          return t;
+        });
+
+        const updated = { ...prev, titles: updatedTitles };
+        saveProjectToDB(updated);
+        return updated;
+      });
+
+      toast.success(`Memori cerita "${parentTitle.name}" berhasil diperbarui!`, { id: 'title-memory-update' });
+    } catch (e: any) {
+      console.warn("Auto Title Memory update failed:", e);
+    }
+  };
+
+  const handleSaveTitleMemory = () => {
+    if (!selectedTitleMemory) return;
+    setProject(prev => {
+      const updatedTitles = prev.titles.map(t => {
+        if (t.id === selectedTitleMemory.id) {
+          return {
+            ...t,
+            characterLore: titleMemoryLoreInput,
+            storySummary: titleMemorySummaryInput
+          };
+        }
+        return t;
+      });
+      const updated = { ...prev, titles: updatedTitles };
+      saveProjectToDB(updated);
+      return updated;
+    });
+    toast.success(`Memori cerita untuk "${selectedTitleMemory.name}" berhasil disimpan!`);
+    setIsTitleMemoryModalOpen(false);
   };
 
   const [generatingSingleScriptPanelId, setGeneratingSingleScriptPanelId] = useState<string | null>(null);
@@ -1398,7 +1507,7 @@ export default function App() {
     if (!currentChapter) return;
     setGeneratingSingleScriptPanelId(panel.id);
     try {
-      const globalContext = buildGlobalContext();
+      const globalContext = buildGlobalContext(currentChapter);
       const script = await generateSinglePanelScript(
         { id: panel.id, imageUrl: panel.imageUrl, dialogue: panel.dialogue, context: panel.context, scriptLength: panel.scriptLength },
         project.settings.language,
@@ -1407,18 +1516,22 @@ export default function App() {
       );
 
       if (script) {
-        setProject(prev => ({
-          ...prev,
-          chapters: prev.chapters.map(c => {
-            if (c.id === currentChapter.id) {
-              return {
-                ...c,
-                panels: c.panels.map(p => p.id === panel.id ? { ...p, script, audio: undefined } : p)
-              };
-            }
-            return c;
-          })
-        }));
+        setProject(prev => {
+          const updated = {
+            ...prev,
+            chapters: prev.chapters.map(c => {
+              if (c.id === currentChapter.id) {
+                return {
+                  ...c,
+                  panels: c.panels.map(p => p.id === panel.id ? { ...p, script, audio: undefined } : p)
+                };
+              }
+              return c;
+            })
+          };
+          saveProjectToDB(updated);
+          return updated;
+        });
         toast.success(`Script berhasil dibuat untuk Panel!`);
       }
     } catch (error: any) {
@@ -1436,55 +1549,51 @@ export default function App() {
     setScriptGenerationAbortController(controller);
 
     const selectedPanels = currentChapter.panels.filter(p => selectedPanelIds.has(p.id));
-    toast.info(`Memulai generate script untuk ${selectedPanels.length} panel terpilih...`);
+    toast.info(`Memulai batch script generation untuk ${selectedPanels.length} panel terpilih...`);
 
     try {
-      const globalContext = buildGlobalContext();
-      let successCount = 0;
+      const globalContext = buildGlobalContext(currentChapter);
+      let completedCount = 0;
 
-      for (let i = 0; i < selectedPanels.length; i++) {
-        if (controller.signal.aborted) {
-          toast.info("Bulk script generation dihentikan.");
-          break;
-        }
+      await generatePanelScripts(
+        selectedPanels,
+        project.settings.language,
+        globalContext,
+        project.settings.scriptLength,
+        controller.signal,
+        (partialResults) => {
+          completedCount += partialResults.length;
+          const resultMap = new Map(partialResults.map(r => [r.id, r.script]));
 
-        const panel = selectedPanels[i];
-        toast.info(`Generating script untuk Panel ID #${panel.id.slice(0, 6)} (${i + 1}/${selectedPanels.length})...`, { id: 'bulk-script-progress' });
-
-        try {
-          const generatedScript = await generateSinglePanelScript(
-            { id: panel.id, imageUrl: panel.imageUrl, dialogue: panel.dialogue, context: panel.context, scriptLength: panel.scriptLength },
-            project.settings.language,
-            globalContext,
-            project.settings.scriptLength,
-            controller.signal
-          );
-
-          if (generatedScript) {
-            successCount++;
-            setProject(prev => ({
+          setProject(prev => {
+            const updated = {
               ...prev,
               chapters: prev.chapters.map(c => {
                 if (c.id === currentChapter.id) {
                   return {
                     ...c,
-                    panels: c.panels.map(p => p.id === panel.id ? { ...p, script: generatedScript, audio: undefined } : p)
+                    panels: c.panels.map(p => resultMap.has(p.id) ? { ...p, script: resultMap.get(p.id)!, audio: undefined } : p)
                   };
                 }
                 return c;
               })
-            }));
-          }
-        } catch (singleErr: any) {
-          console.warn(`Gagal generate script untuk panel ${panel.id}:`, singleErr);
-          toast.warning(`Panel #${panel.id.slice(0, 6)}: Gagal. Melanjutkan ke panel lain...`);
-        }
-      }
+            };
+            saveProjectToDB(updated);
+            return updated;
+          });
 
-      toast.success(`Selesai membuat script untuk ${successCount}/${selectedPanels.length} panel terpilih!`, { id: 'bulk-script-progress' });
+          toast.info(`Script terbuat: ${completedCount}/${selectedPanels.length} panel...`, { id: 'bulk-script-progress' });
+        }
+      );
+
+      toast.success(`Selesai membuat script untuk ${completedCount}/${selectedPanels.length} panel terpilih!`, { id: 'bulk-script-progress' });
       setSelectedPanelIds(new Set());
+      
+      // Auto update Title Memory
+      triggerAutoUpdateTitleMemory(currentChapter);
     } catch (error: any) {
       console.error("Bulk script error:", error);
+      toast.error(`Gagal membuat script: ${error?.message || 'Error'}`);
     } finally {
       setIsProcessing(false);
       setScriptGenerationAbortController(null);
@@ -1504,17 +1613,21 @@ export default function App() {
     setIsProcessing(true);
     try {
       const metadata = await generateSocialMetadata(scripts, project.settings.language);
-      setProject(prev => ({
-        ...prev,
-        chapters: prev.chapters.map(c => 
-          c.id === currentChapter.id ? { ...c, socialMetadata: metadata } : c
-        )
-      }));
-      toast.success("Social media metadata generated!");
+      setProject(prev => {
+        const updated = {
+          ...prev,
+          chapters: prev.chapters.map(c => 
+            c.id === currentChapter.id ? { ...c, socialMetadata: metadata } : c
+          )
+        };
+        saveProjectToDB(updated);
+        return updated;
+      });
+      toast.success("Metadata successfully generated!");
     } catch (error: any) {
       console.error("Metadata generation error:", error);
-      if (error?.message?.includes('429') || error?.message?.includes('RESOURCE_EXHAUSTED')) {
-         toast.error("API Quota Exhausted. Please wait a few minutes before trying again.", { duration: 5000 });
+      if (error?.message?.includes("API Key") || error?.message?.includes("API_KEY")) {
+        toast.error("Gemini API Key invalid/expired. Please update it in Settings.", { id: 'invalid-api-key' });
       } else {
          toast.error(`Failed to generate metadata: ${error?.message || 'Unknown error'}`);
       }
@@ -1530,54 +1643,53 @@ export default function App() {
     setIsProcessing(true);
     const controller = new AbortController();
     setScriptGenerationAbortController(controller);
-    toast.info(`Memulai generate script satu per satu (${currentChapter.panels.length} panel)...`);
+    toast.info(`Memulai batch script generation (${currentChapter.panels.length} panel)...`);
 
     try {
-      const globalContext = buildGlobalContext();
-      let successCount = 0;
+      const globalContext = buildGlobalContext(currentChapter);
+      let completedCount = 0;
 
-      for (let i = 0; i < currentChapter.panels.length; i++) {
-        if (controller.signal.aborted) {
-          toast.info("Script generation dihentikan oleh pengguna.");
-          break;
-        }
+      const unscriptedPanels = currentChapter.panels.filter(p => !p.script?.trim());
+      const panelsToProcess = unscriptedPanels.length > 0 ? unscriptedPanels : currentChapter.panels;
 
-        const panel = currentChapter.panels[i];
-        toast.info(`Generating script untuk Panel #${i + 1}/${currentChapter.panels.length}...`, { id: 'script-progress' });
+      await generatePanelScripts(
+        panelsToProcess,
+        project.settings.language,
+        globalContext,
+        project.settings.scriptLength,
+        controller.signal,
+        (partialResults) => {
+          completedCount += partialResults.length;
+          const resultMap = new Map(partialResults.map(r => [r.id, r.script]));
 
-        try {
-          const generatedScript = await generateSinglePanelScript(
-            { id: panel.id, imageUrl: panel.imageUrl, dialogue: panel.dialogue, context: panel.context, scriptLength: panel.scriptLength },
-            project.settings.language,
-            globalContext,
-            project.settings.scriptLength,
-            controller.signal
-          );
-
-          if (generatedScript) {
-            successCount++;
-            setProject(prev => ({
+          setProject(prev => {
+            const updated = {
               ...prev,
               chapters: prev.chapters.map(c => {
                 if (c.id === currentChapter.id) {
                   return {
                     ...c,
-                    panels: c.panels.map(p => p.id === panel.id ? { ...p, script: generatedScript, audio: undefined } : p)
+                    panels: c.panels.map(p => resultMap.has(p.id) ? { ...p, script: resultMap.get(p.id)!, audio: undefined } : p)
                   };
                 }
                 return c;
               })
-            }));
-          }
-        } catch (singleErr: any) {
-          console.warn(`Gagal membuat script untuk Panel #${i + 1}:`, singleErr);
-          toast.warning(`Panel #${i + 1}: Gagal generate script. Melanjutkan ke panel berikutnya...`);
-        }
-      }
+            };
+            saveProjectToDB(updated);
+            return updated;
+          });
 
-      toast.success(`Selesai membuat script untuk ${successCount}/${currentChapter.panels.length} panel!`, { id: 'script-progress' });
+          toast.info(`Script terbuat: ${completedCount}/${panelsToProcess.length} panel...`, { id: 'script-progress' });
+        }
+      );
+
+      toast.success(`Selesai membuat script untuk ${completedCount}/${panelsToProcess.length} panel!`, { id: 'script-progress' });
+
+      // Auto update Title Memory
+      triggerAutoUpdateTitleMemory(currentChapter);
     } catch (error: any) {
       console.error("Generate scripts error:", error);
+      toast.error(`Gagal membuat script: ${error?.message || 'Error'}`);
     } finally {
       setIsProcessing(false);
       setScriptGenerationAbortController(null);
@@ -2115,75 +2227,76 @@ export default function App() {
     const isGemini = project.settings.voiceEngine === 'gemini';
     const newPanels = [...chapter.panels];
 
-    for (let i = 0; i < newPanels.length; i++) {
-      const panel = newPanels[i];
-      if (panel.audio && !panel.audioIsFallbackSilence) {
-        continue;
-      }
+    const missingIndices = newPanels
+      .map((p, idx) => ({ p, idx }))
+      .filter(({ p }) => !p.audio || p.audioIsFallbackSilence);
 
-      // If the panel has no script, immediately generate a silent track offline!
-      if (!panel.script?.trim()) {
-        const silentAudio = generateSilence(panel.duration || 2.0);
-        newPanels[i] = { ...panel, audio: silentAudio, audioIsFallbackSilence: false };
-        completedCount++;
-        setExportProgress(Math.round((completedCount / missingAudioPanels.length) * 100));
-        continue;
-      }
+    // Concurrency batch size of 3 parallel TTS workers
+    const concurrency = 3;
+    for (let i = 0; i < missingIndices.length; i += concurrency) {
+      const batch = missingIndices.slice(i, i + concurrency);
 
-      let base64Audio = '';
-      let success = false;
-      let retries = 3;
-      let delay = isGemini ? 2000 : 800;
+      await Promise.all(batch.map(async ({ p: panel, idx: panelIdx }) => {
+        // If the panel has no script, immediately generate a silent track offline!
+        if (!panel.script?.trim()) {
+          const silentAudio = generateSilence(panel.duration || 2.0);
+          newPanels[panelIdx] = { ...panel, audio: silentAudio, audioIsFallbackSilence: false };
+          completedCount++;
+          setExportProgress(Math.round((completedCount / missingAudioPanels.length) * 100));
+          return;
+        }
 
-      for (let attempt = 0; attempt < retries; attempt++) {
-        try {
-          base64Audio = isGemini
-            ? await generateSpeech(panel.script, project.settings.globalVoiceId)
-            : await generateFreeSpeech(panel.script, project.settings.language);
-          
-          if (base64Audio) {
-            success = true;
-            break;
-          }
-        } catch (err: any) {
-          console.warn(`Panel ${i + 1} TTS attempt ${attempt + 1} failed:`, err);
-          
-          if (isGemini) {
-            try {
-              console.info(`Attempting transparent fallback to free voice engine for panel ${i + 1}...`);
-              base64Audio = await generateFreeSpeech(panel.script, project.settings.language);
-              if (base64Audio) {
-                success = true;
-                break;
-              }
-            } catch (fallbackErr) {
-              console.warn(`Transparent fallback to free voice engine failed for panel ${i + 1}:`, fallbackErr);
+        let base64Audio = '';
+        let success = false;
+        const retries = 3;
+        let delay = isGemini ? 1500 : 500;
+
+        for (let attempt = 0; attempt < retries; attempt++) {
+          try {
+            base64Audio = isGemini
+              ? await generateSpeech(panel.script, project.settings.globalVoiceId)
+              : await generateFreeSpeech(panel.script, project.settings.language);
+            
+            if (base64Audio) {
+              success = true;
+              break;
+            }
+          } catch (err: any) {
+            console.warn(`Panel ${panelIdx + 1} TTS attempt ${attempt + 1} failed:`, err);
+            
+            if (isGemini) {
+              try {
+                base64Audio = await generateFreeSpeech(panel.script, project.settings.language);
+                if (base64Audio) {
+                  success = true;
+                  break;
+                }
+              } catch (fallbackErr) {}
+            }
+
+            const isRateLimit = err?.status === 429 || err?.message?.includes('429') || err?.message?.includes('RESOURCE_EXHAUSTED');
+            if (attempt < retries - 1) {
+              const currentDelay = isRateLimit ? delay * 2 : delay;
+              await new Promise(resolve => setTimeout(resolve, currentDelay));
+              delay *= 2;
             }
           }
-
-          const isRateLimit = err?.status === 429 || err?.message?.includes('429') || err?.message?.includes('RESOURCE_EXHAUSTED');
-          if (attempt < retries - 1) {
-            const currentDelay = isRateLimit ? delay * 2 : delay;
-            await new Promise(resolve => setTimeout(resolve, currentDelay));
-            delay *= 2;
-          }
         }
-      }
 
-      completedCount++;
-      setExportProgress(Math.round((completedCount / missingAudioPanels.length) * 100));
+        completedCount++;
+        setExportProgress(Math.round((completedCount / missingAudioPanels.length) * 100));
 
-      if (success && base64Audio) {
-        newPanels[i] = { ...panel, audio: base64Audio, audioIsFallbackSilence: false };
-      } else {
-        // Fallback to silence if generation fails completely so we always have a track
-        console.error(`Failed to generate audio for panel ${i + 1}. Falling back to silence.`);
-        toast.warning(`Panel ${i + 1}: Gagal membuat suara (API limit/koneksi). Menggunakan keheningan sementara.`, { duration: 5000 });
-        const silentAudio = generateSilence(panel.duration || 2.0);
-        newPanels[i] = { ...panel, audio: silentAudio, audioIsFallbackSilence: true };
-      }
+        if (success && base64Audio) {
+          newPanels[panelIdx] = { ...panel, audio: base64Audio, audioIsFallbackSilence: false };
+        } else {
+          console.error(`Failed to generate audio for panel ${panelIdx + 1}. Falling back to silence.`);
+          toast.warning(`Panel ${panelIdx + 1}: Gagal membuat suara (API limit/koneksi). Menggunakan keheningan sementara.`, { duration: 5000 });
+          const silentAudio = generateSilence(panel.duration || 2.0);
+          newPanels[panelIdx] = { ...panel, audio: silentAudio, audioIsFallbackSilence: true };
+        }
+      }));
 
-      // Save project state progressively as each audio track completes!
+      // Save project state progressively as each batch finishes!
       setProject(prev => {
         const updated = {
           ...prev,
@@ -2193,10 +2306,8 @@ export default function App() {
         return updated;
       });
 
-      // Add a small safe gap between requests to avoid rate limits
-      if (i < newPanels.length - 1) {
-        const gap = isGemini ? 500 : 200;
-        await new Promise(resolve => setTimeout(resolve, gap));
+      if (i + concurrency < missingIndices.length) {
+        await new Promise(resolve => setTimeout(resolve, isGemini ? 300 : 100));
       }
     }
 
@@ -3738,7 +3849,24 @@ pause
                             {project.titles.find(t => t.id === currentTitleId)?.name} Chapters
                           </h3>
                         </div>
-                        <div className="flex items-center gap-4">
+                        <div className="flex items-center gap-3">
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => {
+                              const t = project.titles.find(t => t.id === currentTitleId);
+                              if (t) {
+                                setSelectedTitleMemory(t);
+                                setTitleMemoryLoreInput(t.characterLore || '');
+                                setTitleMemorySummaryInput(t.storySummary || '');
+                                setIsTitleMemoryModalOpen(true);
+                              }
+                            }}
+                            className="gap-2 border-blue-500/30 hover:border-blue-500 hover:bg-blue-500/10 text-blue-400 font-bold"
+                          >
+                            <Sparkles className="w-4 h-4 text-blue-400" />
+                            <span>Memory & Character Lore</span>
+                          </Button>
                           <div className="flex items-center bg-foreground/5 p-1 rounded-xl border border-border/50">
                             <Button 
                               variant="ghost" 
@@ -4095,50 +4223,60 @@ pause
                                 </Button>
                               </div>
                               <Button 
-                                variant="outline" 
+                                variant="default" 
                                 size="sm"
-                                disabled={selectedPanelIds.size === 0 || isProcessing}
-                                className="border-border bg-foreground/5 hover:bg-foreground/10 text-foreground font-bold h-8 lg:h-9 text-[9px] lg:text-[10px] uppercase tracking-widest hidden sm:flex"
-                                onClick={handleBulkScript}
+                                disabled={isProcessing || currentChapter.panels.length === 0}
+                                className="bg-blue-600 hover:bg-blue-700 text-white font-bold h-8 lg:h-9 text-[9px] lg:text-[10px] uppercase tracking-widest flex shadow-md shadow-blue-500/20 cursor-pointer"
+                                onClick={handleGenerateScripts}
                               >
-                                <Sparkles className="w-3.5 h-3.5 mr-2 text-blue-400" />
-                                <span className="hidden lg:inline">Auto-Script Selected</span>
-                                <span className="lg:hidden">Auto-Script</span>
+                                <Sparkles className="w-3.5 h-3.5 mr-1.5 text-white" />
+                                <span>Generate All Scripts ({currentChapter.panels.length})</span>
                               </Button>
-                              <Button 
-                                variant="outline" 
-                                size="sm"
-                                disabled={selectedPanelIds.size === 0}
-                                className="border-red-500/20 bg-red-500/5 hover:bg-red-500/10 text-red-400 font-bold h-8 lg:h-9 text-[9px] lg:text-[10px] uppercase tracking-widest hidden sm:flex"
-                                onClick={() => {
-                                  setSelectedPanelIds(new Set());
-                                  toast.info("Selection cleared");
-                                }}
-                              >
-                                <X className="w-3.5 h-3.5 mr-2" />
-                                <span className="hidden lg:inline">Clear Selection</span>
-                                <span className="lg:hidden">Clear</span>
-                              </Button>
+                              {selectedPanelIds.size > 0 && (
+                                <Button 
+                                  variant="outline" 
+                                  size="sm"
+                                  disabled={isProcessing}
+                                  className="border-blue-500/40 bg-blue-500/10 text-blue-400 hover:bg-blue-500/20 font-bold h-8 lg:h-9 text-[9px] lg:text-[10px] uppercase tracking-widest hidden sm:flex cursor-pointer"
+                                  onClick={handleBulkScript}
+                                >
+                                  <Sparkles className="w-3.5 h-3.5 mr-1.5 text-blue-400" />
+                                  <span>Script Selected ({selectedPanelIds.size})</span>
+                                </Button>
+                              )}
+                              {selectedPanelIds.size > 0 && (
+                                <Button 
+                                  variant="outline" 
+                                  size="sm"
+                                  className="border-red-500/20 bg-red-500/5 hover:bg-red-500/10 text-red-400 font-bold h-8 lg:h-9 text-[9px] lg:text-[10px] uppercase tracking-widest hidden sm:flex cursor-pointer"
+                                  onClick={() => {
+                                    setSelectedPanelIds(new Set());
+                                    toast.info("Selection cleared");
+                                  }}
+                                >
+                                  <X className="w-3.5 h-3.5 mr-1.5" />
+                                  <span>Clear Selection</span>
+                                </Button>
+                              )}
                             </div>
                           </div>
 
-                          {/* Mobile-only visible bulk buttons to prevent overflow */}
+                          {/* Mobile-only visible bulk buttons */}
                           {selectedPanelIds.size > 0 && (
                             <div className="flex sm:hidden gap-2 pb-4">
                               <Button 
                                 variant="outline" 
                                 size="sm"
-                                disabled={selectedPanelIds.size === 0 || isProcessing}
-                                className="flex-1 border-border bg-foreground/5 hover:bg-foreground/10 text-foreground font-bold h-10 text-[10px] uppercase tracking-widest"
+                                disabled={isProcessing}
+                                className="flex-1 border-blue-500/40 bg-blue-500/10 text-blue-400 font-bold h-10 text-[10px] uppercase tracking-widest"
                                 onClick={handleBulkScript}
                               >
                                 <Sparkles className="w-4 h-4 mr-2 text-blue-400" />
-                                Script
+                                Script Selected ({selectedPanelIds.size})
                               </Button>
                               <Button 
                                 variant="outline" 
                                 size="sm"
-                                disabled={selectedPanelIds.size === 0}
                                 className="flex-1 border-red-500/20 bg-red-500/5 hover:bg-red-500/10 text-red-400 font-bold h-10 text-[10px] uppercase tracking-widest"
                                 onClick={() => {
                                   setSelectedPanelIds(new Set());
@@ -4314,11 +4452,11 @@ pause
                                   </div>
                                   <div className="flex items-center gap-1.5 text-[9px] font-mono text-foreground/30">
                                     <Volume2 className="w-2.5 h-2.5" />
-                                    <span>{panel.script.length} CHARS</span>
+                                    <span>{(panel.script || '').length} CHARS</span>
                                   </div>
                                 </div>
                                 <textarea 
-                                  value={panel.script}
+                                  value={panel.script || ''}
                                   onMouseDown={(e) => e.stopPropagation()}
                                   onChange={(e) => {
                                     const newScript = e.target.value;
@@ -5678,6 +5816,61 @@ pause
               >
                 Simpan & Tutup
               </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        {/* Title Memory Modal */}
+        <Dialog open={isTitleMemoryModalOpen} onOpenChange={setIsTitleMemoryModalOpen}>
+          <DialogContent className="max-w-2xl bg-card border-border text-foreground">
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2 text-xl font-bold">
+                <Sparkles className="w-5 h-5 text-blue-400" />
+                Title Memory & Character Encyclopedia ({selectedTitleMemory?.name})
+              </DialogTitle>
+            </DialogHeader>
+            <div className="space-y-4 py-2">
+              <div>
+                <label className="text-xs font-bold uppercase tracking-wider mb-1 block text-foreground/80">
+                  Character Profiles & Visual Identity (Kumulatif Karakter)
+                </label>
+                <textarea
+                  value={titleMemoryLoreInput}
+                  onChange={e => setTitleMemoryLoreInput(e.target.value)}
+                  placeholder="Daftar karakter, penampilan visual, peran, dan ciri fisik..."
+                  className="w-full h-32 bg-background border border-border/80 rounded-lg p-3 text-xs font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
+              <div>
+                <label className="text-xs font-bold uppercase tracking-wider mb-1 block text-foreground/80">
+                  Cumulative Story Summary (Ringkasan Cerita Chapter 1 s/d Sebelum Ini)
+                </label>
+                <textarea
+                  value={titleMemorySummaryInput}
+                  onChange={e => setTitleMemorySummaryInput(e.target.value)}
+                  placeholder="Ringkasan alur cerita dari chapter-chapter sebelumnya..."
+                  className="w-full h-32 bg-background border border-border/80 rounded-lg p-3 text-xs font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
+              {selectedTitleMemory?.chapterSummaries && selectedTitleMemory.chapterSummaries.length > 0 && (
+                <div>
+                  <label className="text-xs font-bold uppercase tracking-wider mb-1 block text-foreground/80">
+                    Past Chapter Summaries History
+                  </label>
+                  <div className="max-h-28 overflow-y-auto space-y-2 bg-background/50 border border-border/50 rounded-lg p-3 text-xs">
+                    {selectedTitleMemory.chapterSummaries.map((cs, idx) => (
+                      <div key={idx} className="border-b border-border/30 pb-1 last:border-0">
+                        <span className="font-bold text-blue-400">{cs.chapterName}: </span>
+                        <span className="text-foreground/80">{cs.summary}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+            <DialogFooter className="gap-2">
+              <Button variant="ghost" onClick={() => setIsTitleMemoryModalOpen(false)}>Batal</Button>
+              <Button onClick={handleSaveTitleMemory} className="bg-blue-600 hover:bg-blue-700 text-white font-bold">Simpan Memori</Button>
             </DialogFooter>
           </DialogContent>
         </Dialog>

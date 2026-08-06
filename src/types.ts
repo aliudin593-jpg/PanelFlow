@@ -20,12 +20,22 @@ export interface Panel {
 
 export type CategoryType = 'Manga' | 'Manhwa' | 'Manhua';
 
+export interface ChapterSummaryEntry {
+  chapterId: string;
+  chapterName: string;
+  summary: string;
+  createdAt: number;
+}
+
 export interface Title {
   id: string;
   name: string;
   categoryId: string;
   coverUrl?: string;
   createdAt: number;
+  characterLore?: string; // Cumulative character profiles & identities
+  storySummary?: string;  // Cumulative summary of events up to the latest processed chapter
+  chapterSummaries?: ChapterSummaryEntry[];
 }
 
 export interface Category {
