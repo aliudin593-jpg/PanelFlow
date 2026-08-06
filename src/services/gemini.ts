@@ -61,10 +61,26 @@ function ensureKeyStates(): KeyState[] {
 function getAvailableKeyStates(): KeyState[] {
   const now = Date.now();
   const all = ensureKeyStates();
-  const available = all.filter(s => !s.dailyExhausted && s.rpmCooldownUntil <= now);
-  // If everything is cooling down / exhausted, fall back to the full list rather than failing outright —
-  // an expired cooldown will resolve itself, and we'd rather retry than hard-stop.
-  return available.length > 0 ? available : all;
+  return all.filter(s => !s.dailyExhausted && s.rpmCooldownUntil <= now);
+}
+
+/**
+ * Returns the number of milliseconds until the soonest cooldown key becomes
+ * available again.  Returns 0 if at least one key is already free.
+ * Returns Infinity if every key is daily-exhausted (no recovery possible).
+ */
+function msUntilNextKeyAvailable(): number {
+  const now = Date.now();
+  const all = ensureKeyStates();
+  const nonExhausted = all.filter(s => !s.dailyExhausted);
+  if (nonExhausted.length === 0) return Infinity;
+
+  // If any key is already free, wait time is 0
+  if (nonExhausted.some(s => s.rpmCooldownUntil <= now)) return 0;
+
+  // Find the key whose cooldown expires soonest
+  const earliest = Math.min(...nonExhausted.map(s => s.rpmCooldownUntil));
+  return Math.max(0, earliest - now);
 }
 
 export function markKeyAsExhausted(key: string) {
@@ -446,9 +462,13 @@ export async function generatePanelScripts(
       onProgress(chunkScripts);
     }
 
-    // Throttle between chunk batches to stay smoothly under RPM limits.
+    // Throttle between chunk batches.
+    // With N keys and RPM limits, spread requests: wait at least 1200ms between
+    // batch chunks so key rotations have room to breathe between bursts.
     if (i + 1 < chunks.length) {
-      await new Promise(resolve => setTimeout(resolve, 400));
+      const numKeys = Math.max(1, getAvailableKeyStates().length + ensureKeyStates().filter(s => s.dailyExhausted).length);
+      const interChunkDelay = numKeys >= 5 ? 1200 : numKeys >= 3 ? 1800 : 2500;
+      await new Promise(resolve => setTimeout(resolve, interChunkDelay));
     }
   }
 
@@ -472,21 +492,50 @@ export async function generatePanelScripts(
 //   attempts before falling back to a real timed backoff.
 // ============================================================================
 
-const DEFAULT_RPM_COOLDOWN_MS = 60_000;
+const DEFAULT_RPM_COOLDOWN_MS = 62_000; // slightly over 60s to avoid edge-case re-hits
+
+// Maximum total time we'll wait across all attempts for all-keys-cooldown situations (10 min).
+const MAX_TOTAL_WAIT_MS = 10 * 60 * 1000;
 
 async function withRetry<T>(
   operation: (client: GoogleGenAI, key: string) => Promise<T>,
-  maxTimedRetries = 5,
+  maxTimedRetries = 8,
   baseDelay = 1000
 ): Promise<T> {
   let timedAttempt = 0;
+  let totalWaitedMs = 0;
 
   while (true) {
+    // ── Key selection ────────────────────────────────────────────────────────
+    // If no key is immediately free, wait until the earliest cooldown expires
+    // BEFORE picking a key — this prevents hammering keys that are still cooling.
+    let waitNeeded = msUntilNextKeyAvailable();
+    if (waitNeeded === Infinity) {
+      throw new Error("Semua API Key telah mencapai kuota harian. Coba lagi besok atau tambahkan key baru di Settings.");
+    }
+    if (waitNeeded > 0) {
+      if (totalWaitedMs + waitNeeded > MAX_TOTAL_WAIT_MS) {
+        throw new Error(`Timeout menunggu API Key tersedia setelah ${Math.round(totalWaitedMs / 1000)}s. Tambahkan lebih banyak API Key di Settings.`);
+      }
+      const waitSec = Math.ceil(waitNeeded / 1000);
+      console.warn(`[API Key Manager] All keys in RPM cooldown. Waiting ${waitSec}s for earliest key to recover...`);
+      toast.info(`Semua API Key sedang cooldown. Menunggu ${waitSec}s...`, { id: 'all-keys-cooldown', duration: waitNeeded + 2000 });
+      await new Promise(resolve => setTimeout(resolve, waitNeeded + 200)); // +200ms buffer
+      totalWaitedMs += waitNeeded + 200;
+    }
+
+    const available = getAvailableKeyStates();
+    if (available.length === 0) {
+      // Edge case: re-check after the wait (should not normally happen)
+      continue;
+    }
+
     const { client, key } = getGenAI();
     if (!key) {
       throw new Error("Tidak ada Gemini API Key yang tersedia. Silakan periksa Settings.");
     }
 
+    // ── Execute ──────────────────────────────────────────────────────────────
     try {
       return await operation(client, key);
     } catch (error: any) {
@@ -498,31 +547,30 @@ async function withRetry<T>(
 
       if (classification === 'daily') {
         markKeyAsExhausted(key);
-        toast.warning(`Kuota harian habis untuk salah satu API Key. Beralih ke key lain jika tersedia.`, { id: 'daily-quota-hit' });
+        const remaining = getAvailableKeyStates().length;
+        toast.warning(
+          `Kuota harian habis untuk key ${key.substring(0, 6)}....${remaining > 0 ? ` Masih ada ${remaining} key aktif.` : ' Semua key habis!'}`,
+          { id: 'daily-quota-hit' }
+        );
       } else {
-        // per-minute or unknown-rate-limit: short cooldown for THIS key only
+        // per-minute or unknown-rate-limit: put THIS key in cooldown
         const cooldown = retryAfterMs ?? DEFAULT_RPM_COOLDOWN_MS;
         putKeyInCooldown(key, cooldown);
+        console.info(`[API Key Manager] per-minute limit on key ${key.substring(0, 6)}..., switching to another key.`);
       }
 
-      const stillAvailable = getAvailableKeyStates().filter(s => s.key !== key || getAvailableKeyStates().length > 1);
-      const anyOtherKeyUsable = getAvailableKeyStates().some(s => s.key !== key);
-
-      if (anyOtherKeyUsable) {
-        // Rotate immediately — no artificial delay needed, another key is free right now.
-        console.info(`[API Key Manager] ${classification} limit on key ${key.substring(0, 6)}..., switching to another key.`);
-        continue;
+      // Check if another key is immediately free — if so, rotate without delay
+      const anyFreeNow = getAvailableKeyStates().length > 0;
+      if (anyFreeNow) {
+        continue; // pick a different key on next loop iteration
       }
 
-      // No other key is currently usable — this is a real "everyone is rate limited" moment.
+      // All keys are now cooling down — the top of the loop will handle waiting
       timedAttempt++;
       if (timedAttempt > maxTimedRetries) {
-        throw error;
+        throw new Error(`API rate limit: ${maxTimedRetries} key-rotation cycles exhausted. Kurangi jumlah panel yang diproses bersamaan atau tambah API Key.`);
       }
-      const delay = retryAfterMs ?? (baseDelay * Math.pow(2, Math.min(timedAttempt - 1, 4)));
-      console.warn(`[API Key Manager] All keys rate-limited. Waiting ${delay}ms (attempt ${timedAttempt}/${maxTimedRetries})...`);
-      toast.info(`Semua API Key sedang limit. Menunggu ${Math.round(delay / 1000)}s...`, { id: 'all-keys-cooldown' });
-      await new Promise(resolve => setTimeout(resolve, delay));
+      // Don't sleep here — let the top-of-loop wait logic handle timing precisely
     }
   }
 }
