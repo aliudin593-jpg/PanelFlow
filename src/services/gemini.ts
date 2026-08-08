@@ -57,9 +57,23 @@ function ensureKeyStates(): KeyState[] {
   return raw.map(k => keyStates.get(k)!);
 }
 
+let globalProjectCooldownUntil = 0;
+
+export function putAllKeysInCooldown(cooldownMs: number) {
+  globalProjectCooldownUntil = Date.now() + cooldownMs;
+  console.warn(
+    `[API Key Manager] Project-wide quota hit. ALL keys cooling down for ${Math.round(
+      cooldownMs / 1000
+    )}s (rotating keys won't help — quota is shared across the project).`
+  );
+}
+
 /** Keys that are neither daily-exhausted nor currently in an RPM cooldown window. */
 function getAvailableKeyStates(): KeyState[] {
   const now = Date.now();
+  if (globalProjectCooldownUntil > now) {
+    return [];
+  }
   const all = ensureKeyStates();
   return all.filter(s => !s.dailyExhausted && s.rpmCooldownUntil <= now);
 }
@@ -71,16 +85,18 @@ function getAvailableKeyStates(): KeyState[] {
  */
 function msUntilNextKeyAvailable(): number {
   const now = Date.now();
+  const globalWait = Math.max(0, globalProjectCooldownUntil - now);
+
   const all = ensureKeyStates();
   const nonExhausted = all.filter(s => !s.dailyExhausted);
   if (nonExhausted.length === 0) return Infinity;
 
-  // If any key is already free, wait time is 0
-  if (nonExhausted.some(s => s.rpmCooldownUntil <= now)) return 0;
+  if (globalWait === 0 && nonExhausted.some(s => s.rpmCooldownUntil <= now)) return 0;
 
-  // Find the key whose cooldown expires soonest
-  const earliest = Math.min(...nonExhausted.map(s => s.rpmCooldownUntil));
-  return Math.max(0, earliest - now);
+  const earliestKey = Math.min(...nonExhausted.map(s => s.rpmCooldownUntil));
+  const keyWait = Math.max(0, earliestKey - now);
+
+  return Math.max(globalWait, keyWait);
 }
 
 export function markKeyAsExhausted(key: string) {
@@ -150,7 +166,11 @@ function getGenAI(forceKey?: string) {
 
 export type QuotaClassification = 'daily' | 'per-minute' | 'unknown-rate-limit' | 'not-rate-limit';
 
-export function classifyError(error: any): { classification: QuotaClassification; retryAfterMs: number | null } {
+export function classifyError(error: any): { 
+  classification: QuotaClassification; 
+  retryAfterMs: number | null; 
+  isProjectWideQuota: boolean;
+} {
   const status = error?.status ?? error?.code;
   const httpStatus = error?.response?.status ?? error?.status;
   const errMsg = String(error?.message || '').toLowerCase();
@@ -170,6 +190,11 @@ export function classifyError(error: any): { classification: QuotaClassification
 
   let retryAfterMs: number | null = null;
   let classification: QuotaClassification = isRateLimitStatus ? 'unknown-rate-limit' : 'not-rate-limit';
+  let isProjectWideQuota = false;
+
+  if (errMsg.includes('perproject') || errMsg.includes('per_project')) {
+    isProjectWideQuota = true;
+  }
 
   if (Array.isArray(details)) {
     for (const d of details) {
@@ -178,6 +203,9 @@ export function classifyError(error: any): { classification: QuotaClassification
         const violations = d?.violations || [];
         for (const v of violations) {
           const quotaId = String(v?.quotaId || v?.quota_metric || '').toLowerCase();
+          if (quotaId.includes('perproject') || quotaId.includes('per_project')) {
+            isProjectWideQuota = true;
+          }
           if (quotaId.includes('perday') || quotaId.includes('per_day') || quotaId.includes('daily')) {
             classification = 'daily';
           } else if (quotaId.includes('perminute') || quotaId.includes('per_minute')) {
@@ -209,15 +237,12 @@ export function classifyError(error: any): { classification: QuotaClassification
     } else if (minutePatterns.some(p => errMsg.includes(p))) {
       classification = 'per-minute';
     }
-    // If we truly can't tell, treat as per-minute (safer default: don't
-    // permanently kill a key on ambiguous evidence — worst case it just
-    // gets retried after a cooldown instead of being nuked for the session).
     else if (isRateLimitStatus) {
       classification = 'per-minute';
     }
   }
 
-  return { classification, retryAfterMs };
+  return { classification, retryAfterMs, isProjectWideQuota };
 }
 
 export function fastCompressForAI(
@@ -568,7 +593,7 @@ async function withRetry<T>(
     try {
       return await operation(client, key);
     } catch (error: any) {
-      const { classification, retryAfterMs } = classifyError(error);
+      const { classification, retryAfterMs, isProjectWideQuota } = classifyError(error);
 
       if (classification === 'not-rate-limit') {
         throw error;
@@ -582,10 +607,14 @@ async function withRetry<T>(
           { id: 'daily-quota-hit' }
         );
       } else {
-        // per-minute or unknown-rate-limit: put THIS key in cooldown
+        // per-minute or unknown-rate-limit
         const cooldown = retryAfterMs ?? DEFAULT_RPM_COOLDOWN_MS;
-        putKeyInCooldown(key, cooldown);
-        console.info(`[API Key Manager] per-minute limit on key ${key.substring(0, 6)}..., switching to another key.`);
+        if (isProjectWideQuota) {
+          putAllKeysInCooldown(cooldown);
+        } else {
+          putKeyInCooldown(key, cooldown);
+          console.info(`[API Key Manager] per-minute limit on key ${key.substring(0, 6)}..., switching to another key.`);
+        }
       }
 
       // Check if another key is immediately free — if so, rotate without delay
