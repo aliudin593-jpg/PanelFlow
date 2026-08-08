@@ -363,112 +363,141 @@ export async function generatePanelScripts(
   }
 
   const allResults: { id: string; script: string }[] = [];
+  const { totalKeys: numKeys } = getKeyPoolStats();
+  const parallelChunkWorkers = Math.max(1, Math.min(Math.floor(numKeys / 2), 3));
 
-  for (let i = 0; i < chunks.length; i++) {
+  for (let i = 0; i < chunks.length; i += parallelChunkWorkers) {
     if (signal?.aborted) break;
-    const chunk = chunks[i];
+    const currentChunkBatch = chunks.slice(i, i + parallelChunkWorkers);
 
-    const compressedChunk = await Promise.all(chunk.map(async p => {
-      const compressed = await fastCompressForAI(p.imageUrl, 360);
-      return { ...p, ...compressed };
-    }));
+    const batchResults = await Promise.all(
+      currentChunkBatch.map(async (chunk) => {
+        if (signal?.aborted) return [];
 
-    const promptText = `
-      You are a professional comic narrator.
-      Analyze these ${chunk.length} comic panels in sequential order.
-      For each panel, write a cinematic video narration script in ${language}.
-      ${globalContext ? `Global Context: ${globalContext}\n` : ''}
-      Return a JSON array of objects with fields "id" and "script".
-      CRITICAL: Use exact panel ID for each object.
-    `;
+        const compressedChunk = await Promise.all(
+          chunk.map(async (p) => {
+            const compressed = await fastCompressForAI(p.imageUrl, 360);
+            return { ...p, ...compressed };
+          })
+        );
 
-    const parts: any[] = [{ text: promptText }];
-    compressedChunk.forEach((p, idx) => {
-      let lengthInstr = "Normal (1-3 sentences)";
-      const lSetting = p.scriptLength || globalScriptLength;
-      if (lSetting === 'Short') lengthInstr = "Short (1 sentence)";
-      else if (lSetting === 'Detailed') lengthInstr = "Detailed (4+ sentences)";
+        const promptText = `
+          You are a professional comic narrator.
+          Analyze these ${chunk.length} comic panels in sequential order.
+          For each panel, write a cinematic video narration script in ${language}.
+          ${globalContext ? `Global Context: ${globalContext}\n` : ''}
+          Return a JSON array of objects with fields "id" and "script".
+          CRITICAL: Use exact panel ID for each object.
+        `;
 
-      parts.push({ text: `Panel ID: ${p.id}\nIndex: ${idx + 1}\nRequired Length: ${lengthInstr}${p.context ? `\nContext: ${p.context}` : ''}` });
-      parts.push({ inlineData: { mimeType: p.mimeType, data: p.data } });
-    });
+        const parts: any[] = [{ text: promptText }];
+        compressedChunk.forEach((p, idx) => {
+          let lengthInstr = "Normal (1-3 sentences)";
+          const lSetting = p.scriptLength || globalScriptLength;
+          if (lSetting === 'Short') lengthInstr = "Short (1 sentence)";
+          else if (lSetting === 'Detailed') lengthInstr = "Detailed (4+ sentences)";
 
-    let chunkScripts: { id: string; script: string }[] = [];
+          parts.push({
+            text: `Panel ID: ${p.id}\nIndex: ${idx + 1}\nRequired Length: ${lengthInstr}${
+              p.context ? `\nContext: ${p.context}` : ''
+            }`,
+          });
+          parts.push({ inlineData: { mimeType: p.mimeType, data: p.data } });
+        });
 
-    try {
-      await withRetry(async (client) => {
-        const response = await (client.models.generateContent as any)({
-          model: "gemini-2.5-flash",
-          contents: [{ role: 'user', parts }],
-          config: {
-            responseMimeType: "application/json",
-            responseSchema: {
-              type: Type.ARRAY,
-              items: {
-                type: Type.OBJECT,
-                properties: {
-                  id: { type: Type.STRING },
-                  script: { type: Type.STRING }
+        let chunkScripts: { id: string; script: string }[] = [];
+
+        try {
+          await withRetry(
+            async (client) => {
+              const response = await (client.models.generateContent as any)(
+                {
+                  model: "gemini-2.5-flash",
+                  contents: [{ role: 'user', parts }],
+                  config: {
+                    responseMimeType: "application/json",
+                    responseSchema: {
+                      type: Type.ARRAY,
+                      items: {
+                        type: Type.OBJECT,
+                        properties: {
+                          id: { type: Type.STRING },
+                          script: { type: Type.STRING },
+                        },
+                        required: ["id", "script"],
+                      },
+                    },
+                  },
                 },
-                required: ["id", "script"]
+                { signal }
+              );
+
+              const text = response.text;
+              if (text) {
+                let clean = text.trim();
+                if (clean.includes("```")) {
+                  const m = clean.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
+                  if (m) clean = m[1].trim();
+                }
+                const parsed = JSON.parse(clean);
+                if (Array.isArray(parsed)) {
+                  chunk.forEach((p, idx) => {
+                    let match = parsed.find(
+                      (item) => item && (item.id === p.id || item.id === `panel_${idx + 1}` || item.id === `${idx + 1}`)
+                    );
+                    if (!match && parsed[idx]) match = parsed[idx];
+                    const scriptText = typeof match === 'string' ? match : (match?.script || match?.text || '');
+                    if (scriptText && scriptText.trim()) {
+                      chunkScripts.push({ id: p.id, script: scriptText.trim() });
+                    }
+                  });
+                }
               }
             }
-          }
-        }, { signal });
+          );
+        } catch (err) {
+          console.warn(
+            "[Turbo Engine] Batch JSON chunk failed, falling back to sequential single-panel workers for this chunk:",
+            err
+          );
+        }
 
-        const text = response.text;
-        if (text) {
-          let clean = text.trim();
-          if (clean.includes("```")) {
-            const m = clean.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
-            if (m) clean = m[1].trim();
-          }
-          const parsed = JSON.parse(clean);
-          if (Array.isArray(parsed)) {
-            chunk.forEach((p, idx) => {
-              let match = parsed.find(item => item && (item.id === p.id || item.id === `panel_${idx + 1}` || item.id === `${idx + 1}`));
-              if (!match && parsed[idx]) match = parsed[idx];
-              const scriptText = typeof match === 'string' ? match : (match?.script || match?.text || '');
-              if (scriptText && scriptText.trim()) {
-                chunkScripts.push({ id: p.id, script: scriptText.trim() });
-              }
-            });
+        // Sequential fallback for any panels the batch call missed — throttled to avoid an RPM spike.
+        const scoredIds = new Set(chunkScripts.map((s) => s.id));
+        const missingPanels = chunk.filter((p) => !scoredIds.has(p.id));
+
+        if (missingPanels.length > 0 && !signal?.aborted) {
+          for (const p of missingPanels) {
+            if (signal?.aborted) break;
+            try {
+              const s = await generateSinglePanelScript(
+                p,
+                language,
+                globalContext,
+                globalScriptLength,
+                signal
+              );
+              if (s) chunkScripts.push({ id: p.id, script: s });
+            } catch (e) {
+              console.error("Single panel fallback error:", e);
+            }
+            await new Promise((resolve) => setTimeout(resolve, 300));
           }
         }
-      });
-    } catch (err) {
-      console.warn("[Turbo Engine] Batch JSON chunk failed, falling back to sequential single-panel workers for this chunk:", err);
+
+        return chunkScripts;
+      })
+    );
+
+    const flatResults = batchResults.flat();
+    allResults.push(...flatResults);
+    if (onProgress && flatResults.length > 0) {
+      onProgress(flatResults);
     }
 
-    // Sequential fallback for any panels the batch call missed — throttled to avoid an RPM spike.
-    const scoredIds = new Set(chunkScripts.map(s => s.id));
-    const missingPanels = chunk.filter(p => !scoredIds.has(p.id));
-
-    if (missingPanels.length > 0 && !signal?.aborted) {
-      for (const p of missingPanels) {
-        if (signal?.aborted) break;
-        try {
-          const s = await generateSinglePanelScript(p, language, globalContext, globalScriptLength, signal);
-          if (s) chunkScripts.push({ id: p.id, script: s });
-        } catch (e) {
-          console.error("Single panel fallback error:", e);
-        }
-        await new Promise(resolve => setTimeout(resolve, 300));
-      }
-    }
-
-    allResults.push(...chunkScripts);
-    if (onProgress && chunkScripts.length > 0) {
-      onProgress(chunkScripts);
-    }
-
-    // Throttle between chunk batches.
-    // With N keys and RPM limits, spread requests: wait at least 1200ms between
-    // batch chunks so key rotations have room to breathe between bursts.
-    if (i + 1 < chunks.length) {
-      const numKeys = Math.max(1, getAvailableKeyStates().length + ensureKeyStates().filter(s => s.dailyExhausted).length);
-      const interChunkDelay = numKeys >= 5 ? 1200 : numKeys >= 3 ? 1800 : 2500;
-      await new Promise(resolve => setTimeout(resolve, interChunkDelay));
+    if (i + parallelChunkWorkers < chunks.length) {
+      const interChunkDelay = numKeys >= 5 ? 800 : numKeys >= 3 ? 1200 : 2000;
+      await new Promise((resolve) => setTimeout(resolve, interChunkDelay));
     }
   }
 
