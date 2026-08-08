@@ -15,14 +15,50 @@ async function getDB(): Promise<IDBPDatabase> {
   });
 }
 
+function dedupFullPageUrls(project: Project): Project {
+  const serializedChapters = project.chapters.map(chapter => {
+    const pageIndexMap = new Map<string, number>();
+    chapter.pages.forEach((pageUrl, idx) => {
+      if (!pageIndexMap.has(pageUrl)) pageIndexMap.set(pageUrl, idx);
+    });
+
+    return {
+      ...chapter,
+      panels: chapter.panels.map(panel => {
+        if (!panel.fullPageUrl) return panel;
+        const pageIdx = pageIndexMap.get(panel.fullPageUrl);
+        if (pageIdx === undefined) return panel;
+        return { ...panel, fullPageUrl: `__PAGE_REF__${pageIdx}` };
+      })
+    };
+  });
+  return { ...project, chapters: serializedChapters };
+}
+
+function reconstructFullPageUrls(project: Project): Project {
+  const restoredChapters = project.chapters.map(chapter => ({
+    ...chapter,
+    panels: chapter.panels.map(panel => {
+      if (typeof panel.fullPageUrl === 'string' && panel.fullPageUrl.startsWith('__PAGE_REF__')) {
+        const pageIdx = parseInt(panel.fullPageUrl.replace('__PAGE_REF__', ''), 10);
+        return { ...panel, fullPageUrl: chapter.pages[pageIdx] ?? panel.fullPageUrl };
+      }
+      return panel;
+    })
+  }));
+  return { ...project, chapters: restoredChapters };
+}
+
 export async function saveProjectToDB(project: Project): Promise<void> {
   const db = await getDB();
-  await db.put('projects', project, PROJECT_KEY);
+  const deduped = dedupFullPageUrls(project);
+  await db.put('projects', deduped, PROJECT_KEY);
 }
 
 export async function loadProjectFromDB(): Promise<Project | null> {
   const db = await getDB();
-  return (await db.get('projects', PROJECT_KEY)) ?? null;
+  const raw = (await db.get('projects', PROJECT_KEY)) ?? null;
+  return raw ? reconstructFullPageUrls(raw) : null;
 }
 
 export async function exportProjectAsZip(project: Project): Promise<void> {

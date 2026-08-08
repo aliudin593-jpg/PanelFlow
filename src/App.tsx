@@ -220,6 +220,8 @@ export default function App() {
   const [selectedLibraryChapterIds, setSelectedLibraryChapterIds] = useState<Set<string>>(new Set());
 
   const [isInitialLoadComplete, setIsInitialLoadComplete] = useState<boolean>(false);
+  const [isSaving, setIsSaving] = useState<boolean>(false);
+  const [justSaved, setJustSaved] = useState<boolean>(false);
   const importInputRef = useRef<HTMLInputElement>(null);
 
   // Load draft on mount — IndexedDB, fallback to localStorage for migration
@@ -1078,14 +1080,39 @@ export default function App() {
   // Auto-save to IndexedDB immediately whenever project changes so refresh never loses progress
   useEffect(() => {
     if (!isInitialLoadComplete) return; // jangan overwrite sebelum load selesai
-    saveProjectToDB(project).catch((err) => {
-      console.error('Autosave failed:', err);
-      toast.error('Gagal menyimpan project! Perubahan terbaru mungkin tidak tersimpan.', {
-        id: 'autosave-failed',
-        duration: 8000,
+    setIsSaving(true);
+    setJustSaved(false);
+    const startTime = performance.now();
+    saveProjectToDB(project)
+      .then(() => {
+        const duration = performance.now() - startTime;
+        console.log(`[Autosave] Selesai dalam ${duration.toFixed(0)}ms (${(JSON.stringify(project).length / 1024 / 1024).toFixed(2)} MB payload approx)`);
+        setJustSaved(true);
+        setTimeout(() => setJustSaved(false), 2000);
+      })
+      .catch((err) => {
+        console.error('Autosave failed:', err);
+        toast.error('Gagal menyimpan project! Perubahan terbaru mungkin tidak tersimpan.', {
+          id: 'autosave-failed',
+          duration: 8000,
+        });
+      })
+      .finally(() => {
+        setIsSaving(false);
       });
-    });
   }, [project, isInitialLoadComplete]);
+
+  // Prevent page refresh / tab close while autosave is actively writing to IndexedDB
+  useEffect(() => {
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (isSaving) {
+        e.preventDefault();
+        e.returnValue = '';
+      }
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, [isSaving]);
 
   // Load voices (now using Gemini TTS voices)
   useEffect(() => {
@@ -2697,6 +2724,17 @@ pause
                   className="bg-transparent border-none text-xs font-bold text-foreground/60 focus:text-foreground outline-none w-40 transition-colors"
                   placeholder="Untitled Project"
                 />
+                {isSaving ? (
+                  <div className="flex items-center gap-1.5 px-2.5 py-0.5 bg-amber-500/10 text-amber-400 border border-amber-500/20 rounded-full text-[11px] font-semibold animate-pulse">
+                    <Loader2 className="w-3 h-3 animate-spin" />
+                    <span>Saving...</span>
+                  </div>
+                ) : justSaved ? (
+                  <div className="flex items-center gap-1.5 px-2.5 py-0.5 bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 rounded-full text-[11px] font-semibold transition-all">
+                    <Check className="w-3 h-3" />
+                    <span>Saved</span>
+                  </div>
+                ) : null}
               </div>
               <div className="flex items-center gap-2">
                 <Button
