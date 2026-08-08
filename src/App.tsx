@@ -219,6 +219,7 @@ export default function App() {
   const [selectedLibraryTitleIds, setSelectedLibraryTitleIds] = useState<Set<string>>(new Set());
   const [selectedLibraryChapterIds, setSelectedLibraryChapterIds] = useState<Set<string>>(new Set());
 
+  const [isInitialLoadComplete, setIsInitialLoadComplete] = useState<boolean>(false);
   const importInputRef = useRef<HTMLInputElement>(null);
 
   // Load draft on mount — IndexedDB, fallback to localStorage for migration
@@ -260,6 +261,8 @@ export default function App() {
         }
       } catch (e) {
         console.error('Failed to load draft', e);
+      } finally {
+        setIsInitialLoadComplete(true);
       }
     })();
   }, []);
@@ -1074,8 +1077,15 @@ export default function App() {
 
   // Auto-save to IndexedDB immediately whenever project changes so refresh never loses progress
   useEffect(() => {
-    saveProjectToDB(project).catch(console.error);
-  }, [project]);
+    if (!isInitialLoadComplete) return; // jangan overwrite sebelum load selesai
+    saveProjectToDB(project).catch((err) => {
+      console.error('Autosave failed:', err);
+      toast.error('Gagal menyimpan project! Perubahan terbaru mungkin tidak tersimpan.', {
+        id: 'autosave-failed',
+        duration: 8000,
+      });
+    });
+  }, [project, isInitialLoadComplete]);
 
   // Load voices (now using Gemini TTS voices)
   useEffect(() => {
@@ -1881,8 +1891,9 @@ export default function App() {
 
         let base64Audio = '';
         let success = false;
-        const retries = 3;
+        const retries = 1;
         let delay = isGemini ? 1500 : 500;
+        let lastError: any = null;
 
         for (let attempt = 0; attempt < retries; attempt++) {
           try {
@@ -1895,6 +1906,7 @@ export default function App() {
               break;
             }
           } catch (err: any) {
+            lastError = err;
             console.warn(`Panel ${panelIdx + 1} TTS attempt ${attempt + 1} failed:`, err);
             
             if (isGemini) {
@@ -1924,7 +1936,7 @@ export default function App() {
         if (success && base64Audio) {
           newPanels[panelIdx] = { ...panel, audio: base64Audio, audioIsFallbackSilence: false };
         } else {
-          console.error(`Failed to generate audio for panel ${panelIdx + 1}. Falling back to silence.`);
+          console.error(`[TTS FAILED] Panel ${panelIdx + 1} — Final error:`, lastError?.message || lastError || "Unknown error");
           toast.warning(`Panel ${panelIdx + 1}: Gagal membuat suara (API limit/koneksi). Menggunakan keheningan sementara.`, { duration: 5000 });
           const silentAudio = generateSilence(panel.duration || 2.0);
           newPanels[panelIdx] = { ...panel, audio: silentAudio, audioIsFallbackSilence: true };
@@ -1964,7 +1976,16 @@ export default function App() {
     setIsProcessing(false);
     setExportProgress(0);
 
-    toast.success("All audio tracks generated successfully!");
+    const silentCount = newPanels.filter(p => p.audioIsFallbackSilence).length;
+    if (silentCount > 0) {
+      toast.warning(
+        `${missingAudioPanels.length - silentCount}/${missingAudioPanels.length} audio berhasil dibuat. ${silentCount} panel gagal dan memakai audio hening — cek console untuk detail, atau klik ulang generate audio untuk retry.`,
+        { duration: 8000 }
+      );
+    } else {
+      toast.success("All audio tracks generated successfully!");
+    }
+    return { success: true, updatedChapter };
     return { success: true, updatedChapter };
   };
 
@@ -2691,7 +2712,7 @@ pause
                 <Button
                   variant="ghost"
                   size="icon"
-                  title="Export Project (.panelflow)"
+                  title="Export Project (.panelflow) — Disarankan backup manual secara berkala"
                   className="text-foreground/40 hover:text-blue-400 hover:bg-blue-400/10 rounded-full"
                   onClick={handleExportProject}
                 >
