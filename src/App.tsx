@@ -204,8 +204,12 @@ export default function App() {
     }
   });
 
-  const [currentCategoryId, setCurrentCategoryId] = useState<string | null>(null);
-  const [currentTitleId, setCurrentTitleId] = useState<string | null>(null);
+  const [currentCategoryId, setCurrentCategoryId] = useState<string | null>(() => {
+    return localStorage.getItem('panelflow_current_category_id') || null;
+  });
+  const [currentTitleId, setCurrentTitleId] = useState<string | null>(() => {
+    return localStorage.getItem('panelflow_current_title_id') || null;
+  });
 
   const [selectedTitleMemory, setSelectedTitleMemory] = useState<Title | null>(null);
   const [isTitleMemoryModalOpen, setIsTitleMemoryModalOpen] = useState(false);
@@ -229,6 +233,19 @@ export default function App() {
         const saved = await loadProjectFromDB();
         if (saved) {
           setProject(saved);
+          const savedTab = localStorage.getItem('panelflow_active_tab');
+          if (savedTab) {
+            setActiveTab(savedTab);
+          } else if (saved.currentChapterId) {
+            setActiveTab('edit');
+          }
+          const savedTitle = localStorage.getItem('panelflow_current_title_id');
+          if (savedTitle) {
+            setCurrentTitleId(savedTitle);
+          } else if (saved.currentChapterId) {
+            const chap = saved.chapters.find(c => c.id === saved.currentChapterId);
+            if (chap?.titleId) setCurrentTitleId(chap.titleId);
+          }
           toast.info('Loaded your last draft');
           return;
         }
@@ -319,7 +336,36 @@ export default function App() {
     }
   };
 
-  const [activeTab, setActiveTab] = useState('upload');
+  const [activeTab, setActiveTab] = useState(() => {
+    return localStorage.getItem('panelflow_active_tab') || 'library';
+  });
+
+  useEffect(() => {
+    if (activeTab) localStorage.setItem('panelflow_active_tab', activeTab);
+  }, [activeTab]);
+
+  useEffect(() => {
+    if (currentTitleId) localStorage.setItem('panelflow_current_title_id', currentTitleId);
+    else localStorage.removeItem('panelflow_current_title_id');
+  }, [currentTitleId]);
+
+  useEffect(() => {
+    if (currentCategoryId) localStorage.setItem('panelflow_current_category_id', currentCategoryId);
+    else localStorage.removeItem('panelflow_current_category_id');
+  }, [currentCategoryId]);
+
+  const openChapter = (chapter: ComicChapter) => {
+    setProject(prev => {
+      const updated = { ...prev, currentChapterId: chapter.id };
+      saveProjectToDB(updated).catch(console.error);
+      return updated;
+    });
+    if (chapter.titleId) {
+      setCurrentTitleId(chapter.titleId);
+    }
+    setActiveTab('edit');
+  };
+
   const [isProcessing, setIsProcessing] = useState(false);
   const [currentPanelIndex, setCurrentPanelIndex] = useState(-1);
   const [previewImage, setPreviewImage] = useState<string | null>(null);
@@ -845,8 +891,8 @@ export default function App() {
           </div>
 
           <div 
-            className="flex items-center gap-3 overflow-hidden pl-16"
-            onClick={() => setProject(prev => ({ ...prev, currentChapterId: chapter.id }))}
+            className="flex items-center gap-3 overflow-hidden pl-16 cursor-pointer"
+            onClick={() => openChapter(chapter)}
           >
             <div className="w-8 h-8 bg-background rounded-lg flex-shrink-0 overflow-hidden border border-border shadow-inner">
               {chapter.pages[0] && <img src={chapter.pages[0]} className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-110" />}
@@ -869,8 +915,7 @@ export default function App() {
                 size="sm"
                 onClick={(e) => {
                   e.stopPropagation();
-                  setProject(prev => ({ ...prev, currentChapterId: chapter.id }));
-                  setActiveTab('edit');
+                  openChapter(chapter);
                 }}
                 className="h-7 px-3 bg-foreground/5 text-foreground/80 hover:text-black hover:bg-white rounded-full text-[9px] font-bold uppercase tracking-widest mr-2"
               >
@@ -1027,12 +1072,9 @@ export default function App() {
     );
   };
 
-  // Auto-save to IndexedDB with 2s debounce whenever project changes
+  // Auto-save to IndexedDB immediately whenever project changes so refresh never loses progress
   useEffect(() => {
-    const timer = setTimeout(() => {
-      saveProjectToDB(project).catch(console.error);
-    }, 2000);
-    return () => clearTimeout(timer);
+    saveProjectToDB(project).catch(console.error);
   }, [project]);
 
   // Load voices (now using Gemini TTS voices)
@@ -1753,6 +1795,13 @@ export default function App() {
   };
 
   const getAudioExtension = (base64: string): 'wav' | 'mp3' => {
+    if (!base64) return 'mp3';
+    try {
+      const head = atob(base64.slice(0, 100));
+      if (head.length >= 4 && head.substring(0, 4) === 'RIFF') {
+        return 'wav';
+      }
+    } catch (e) {}
     return 'mp3';
   };
 
@@ -1815,8 +1864,8 @@ export default function App() {
       .map((p, idx) => ({ p, idx }))
       .filter(({ p }) => !p.audio || p.audioIsFallbackSilence);
 
-    // Concurrency batch size of 3 parallel TTS workers
-    const concurrency = 3;
+    // Sequential TTS generation (concurrency = 1) to prevent 429 rate limits & proxy throttling
+    const concurrency = 1;
     for (let i = 0; i < missingIndices.length; i += concurrency) {
       const batch = missingIndices.slice(i, i + concurrency);
 
@@ -1893,7 +1942,7 @@ export default function App() {
       });
 
       if (i + concurrency < missingIndices.length) {
-        await new Promise(resolve => setTimeout(resolve, isGemini ? 300 : 100));
+        await new Promise(resolve => setTimeout(resolve, isGemini ? 400 : 250));
       }
     }
 
