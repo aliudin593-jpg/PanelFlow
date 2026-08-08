@@ -1086,7 +1086,7 @@ export default function App() {
     saveProjectToDB(project)
       .then(() => {
         const duration = performance.now() - startTime;
-        console.log(`[Autosave] Selesai dalam ${duration.toFixed(0)}ms (${(JSON.stringify(project).length / 1024 / 1024).toFixed(2)} MB payload approx)`);
+        console.log(`[Autosave] Selesai dalam ${duration.toFixed(0)}ms`);
         setJustSaved(true);
         setTimeout(() => setJustSaved(false), 2000);
       })
