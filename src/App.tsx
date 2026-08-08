@@ -1759,7 +1759,6 @@ export default function App() {
       const unscriptedPanels = currentChapter.panels.filter(p => !p.script?.trim());
       const panelsToProcess = unscriptedPanels.length > 0 ? unscriptedPanels : currentChapter.panels;
 
-      console.log("[DEBUG] Global Context sent to AI:", globalContext);
       await generatePanelScripts(
         panelsToProcess,
         project.settings.language,
