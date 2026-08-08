@@ -1873,8 +1873,11 @@ export default function App() {
       .map((p, idx) => ({ p, idx }))
       .filter(({ p }) => !p.audio || p.audioIsFallbackSilence);
 
-    // Sequential TTS generation (concurrency = 1) to prevent 429 rate limits & proxy throttling
-    const concurrency = 1;
+    // Dynamic concurrency based on available API key pool count (capped at 5 to prevent overload)
+    const { totalKeys } = getKeyPoolStats();
+    const concurrency = isGemini 
+      ? Math.max(1, Math.min(totalKeys, 5)) 
+      : 1;
     for (let i = 0; i < missingIndices.length; i += concurrency) {
       const batch = missingIndices.slice(i, i + concurrency);
 
